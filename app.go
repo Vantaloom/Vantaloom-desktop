@@ -85,7 +85,7 @@ func (a *App) Bootstrap() (string, error) {
 	defer cancel()
 
 	// Ensure a usable Node.js exists before booting the runtime: the launcher
-	// scripts and ACP adapters shell out to the system `node`. Auto-installs a
+	// scripts shell out to the system `node`. Auto-installs a
 	// pinned LTS from a China mirror if absent. Non-fatal — boot proceeds with
 	// whatever node may already be present on failure.
 	nodeCtx, cancelNode := context.WithTimeout(ctx, 3*time.Minute)
