@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -134,27 +135,6 @@ func binaryName(name string) string {
 		return name + ".exe"
 	}
 	return name
-}
-
-// meshBinaries are the privileged P2P (EasyTier) files held open by the mesh
-// service. On update we leave any already-installed copy in place — overwriting
-// them would require elevation (and break a running service); a no-op keeps the
-// auto-install/update fully unprivileged, exactly like the CLI's "unchanged
-// mesh → no UAC" path. Newly-installed prefixes still receive them.
-func meshBinaries() map[string]bool {
-	if runtime.GOOS == "windows" {
-		return set("easytier-core.exe", "easytier-cli.exe", "wintun.dll",
-			"Packet.dll", "WinDivert64.sys", "vantaloom-mesh.exe")
-	}
-	return set("vantaloom-mesh", "easytier-core")
-}
-
-func set(items ...string) map[string]bool {
-	m := make(map[string]bool, len(items))
-	for _, it := range items {
-		m[it] = true
-	}
-	return m
 }
 
 func (m *Manager) ctlPath() string {
@@ -355,13 +335,15 @@ func (m *Manager) Install(ctx context.Context, version string, progress func(Pro
 		return "", fmt.Errorf("注册服务失败: %w", err)
 	}
 
-	// Register/start the privileged EasyTier (P2P) sidecar — the one elevation
-	// the desktop install needs (vantaloomctl install only spawns api/agent/web).
-	// Gated so an unchanged mesh is a no-op (no UAC on routine updates), and
-	// non-fatal: on failure P2P falls back to the Hub relay. Mirrors the CLI's
-	// ensureMeshService.
-	report("mesh", "正在注册 P2P 网络服务…", 86)
-	m.ensureMeshService(ctx)
+	// One-time migration: an install/update from before 0.13 may still have the
+	// privileged VantaloomMesh service (EasyTier P2P sidecar) registered, plus
+	// its stale binaries in bin/ — layDown's bin/ copy (like the CLI's) only
+	// OVERLAYS bin/, never deletes, and the 0.13+ package no longer bundles
+	// vantaloom-mesh/easytier-core/the support DLLs. Idempotent (a done-marker
+	// skips every later install/update) and non-fatal: a declined/failed
+	// elevation just leaves the marker unwritten so the next update retries.
+	report("mesh", "正在清理旧版 P2P 服务…", 86)
+	m.uninstallLegacyMeshOnce(ctx)
 
 	report("start", "正在启动后端服务…", 90)
 	if err := m.runCtl(ctx, "start", "--prefix", m.Prefix); err != nil {
@@ -373,9 +355,9 @@ func (m *Manager) Install(ctx context.Context, version string, progress func(Pro
 }
 
 // layDown copies bin/web/cli into the prefix and writes VERSION/manifest/config
-// + launcher. It mirrors applyPackage's file placement but skips the privileged
-// mesh-service registration (P2P falls back to the Hub relay until the user
-// enables it via the CLI) so the operation never needs elevation.
+// + launcher. It mirrors applyPackage's file placement; the operation itself
+// never needs elevation (the one privileged step, uninstallLegacyMeshOnce, runs
+// separately from Install after layDown returns).
 func (m *Manager) layDown(ctx context.Context, pkgRoot, ver string, res resolved) error {
 	if m.Installed() {
 		// Free file locks before overwriting (best-effort, like the CLI).
@@ -389,7 +371,6 @@ func (m *Manager) layDown(ctx context.Context, pkgRoot, ver string, res resolved
 		return err
 	}
 
-	mesh := meshBinaries()
 	for _, name := range []string{"bin", "web", "cli"} {
 		src := filepath.Join(pkgRoot, name)
 		dst := filepath.Join(m.Prefix, name)
@@ -397,15 +378,10 @@ func (m *Manager) layDown(ctx context.Context, pkgRoot, ver string, res resolved
 			continue
 		}
 		if name == "bin" {
-			// Never wipe bin/: overwrite in place, but skip a mesh binary that is
-			// already installed (leave the running privileged service untouched).
-			if err := copyTreeSkip(src, dst, func(rel string) bool {
-				if !mesh[filepath.Base(rel)] {
-					return false
-				}
-				_, err := os.Stat(filepath.Join(dst, rel))
-				return err == nil
-			}); err != nil {
+			// Never wipe bin/: overwrite in place (unconditional overlay — every
+			// build now ships without any file a running privileged service could
+			// be holding open, so there's nothing left to skip).
+			if err := copyTree(src, dst); err != nil {
 				return err
 			}
 		} else {
@@ -541,6 +517,148 @@ func (m *Manager) killTray() {
 		_ = kill.Run()
 		_ = os.Remove(pidFile)
 	}
+}
+
+// ── legacy mesh cleanup (one-time migration) ──
+//
+// Pre-0.13 installs registered a privileged `VantaloomMesh` service (the
+// EasyTier P2P sidecar) on Windows/macOS. 0.13 removed the mesh sidecar
+// entirely, and layDown's bin/ copy only OVERLAYS files (it never deletes) —
+// so without an explicit cleanup step an old install's service + stale
+// binaries would linger forever, and the orphaned service could even
+// restart-loop easytier-core. uninstallLegacyMeshOnce (called once from
+// Install) removes both, gated by a done-marker so it runs at most once and
+// never blocks install/update on a declined/failed elevation prompt.
+
+// legacyMeshRemovedMarker is the done-marker file for uninstallLegacyMeshOnce.
+const legacyMeshRemovedMarker = ".mesh-removed"
+
+// legacyMeshFileNames are the bin/ files a pre-0.13 install's EasyTier sidecar
+// left behind (Windows and Unix names both listed; os.Remove on a name absent
+// on this platform is a harmless no-op).
+var legacyMeshFileNames = []string{
+	"vantaloom-mesh.exe", "vantaloom-mesh",
+	"easytier-core.exe", "easytier-core",
+	"easytier-cli.exe", "easytier-cli",
+	"wintun.dll", "Packet.dll", "WinDivert64.sys",
+}
+
+// uninstallLegacyMeshOnce removes a pre-0.13 install's legacy privileged mesh
+// service plus its stale bin/ binaries, exactly once. Best-effort and
+// non-fatal throughout: any failure (including a declined UAC/admin prompt)
+// just logs and returns with the marker left unwritten, so the very next
+// Install retries.
+func (m *Manager) uninstallLegacyMeshOnce(ctx context.Context) {
+	marker := filepath.Join(m.Prefix, legacyMeshRemovedMarker)
+	if fileExists(marker) {
+		return
+	}
+
+	if !m.removeLegacyMeshService(ctx) {
+		log.Printf("[mesh] 旧版 P2P 服务清理被拒绝或失败，将在下次安装/更新时重试")
+		return
+	}
+
+	// Best-effort: delete the stale mesh binaries so nothing can linger or
+	// restart-loop even after the service registration itself is gone.
+	binDir := filepath.Join(m.Prefix, "bin")
+	for _, name := range legacyMeshFileNames {
+		_ = os.Remove(filepath.Join(binDir, name))
+	}
+
+	if err := os.MkdirAll(m.Prefix, 0o755); err != nil {
+		log.Printf("[mesh] 写入清理标记失败（下次仍会重试）: %v", err)
+		return
+	}
+	if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		log.Printf("[mesh] 写入清理标记失败（下次仍会重试）: %v", err)
+	}
+}
+
+// removeLegacyMeshService elevates once — only if the legacy service/binary
+// actually appears to be present — to remove the old privileged mesh service.
+// Returns true when there was nothing to remove or removal succeeded, false
+// when an elevation was attempted but declined/failed. Never panics: all
+// subprocess errors are captured and logged.
+func (m *Manager) removeLegacyMeshService(ctx context.Context) bool {
+	binDir := filepath.Join(m.Prefix, "bin")
+	meshExe := filepath.Join(binDir, binaryName("vantaloom-mesh"))
+	if !fileExists(meshExe) {
+		return true // sidecar never bundled here, or a prior cleanup already ran
+	}
+
+	switch runtime.GOOS {
+	case "windows":
+		if !legacyMeshServiceRegistered(meshExe) {
+			return true // binary present but no SCM service was ever registered
+		}
+		log.Printf("[mesh] 正在移除旧版 P2P 服务 (VantaloomMesh)…")
+		// `sc delete` alone only marks a still-running service for deletion (it
+		// isn't actually removed until the service next stops) — stop first so
+		// removal takes effect immediately instead of on the next reboot. Both
+		// calls run inside the same elevated process (one UAC prompt).
+		inner := "sc stop VantaloomMesh & sc delete VantaloomMesh"
+		argList := strings.Join([]string{psQuote("/c"), psQuote(inner)}, ",")
+		ps := fmt.Sprintf("$ErrorActionPreference='Stop'; $p = Start-Process -FilePath %s -ArgumentList %s -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+			psQuote("cmd.exe"), argList)
+		cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+		winproc.Hide(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[mesh] 移除旧版服务失败: %v\n%s", err, strings.TrimSpace(string(out)))
+			return false
+		}
+		return true
+	case "darwin":
+		const plist = "/Library/LaunchDaemons/online.timefiles.vantaloom.mesh.plist"
+		log.Printf("[mesh] 正在移除旧版 P2P 服务 (管理员权限)…")
+		inner := fmt.Sprintf("launchctl unload -w %s; rm -f %s", shQuote(plist), shQuote(plist))
+		script := fmt.Sprintf("do shell script %s with administrator privileges", osaQuote(inner))
+		cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+		winproc.Hide(cmd)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("[mesh] 移除旧版服务失败: %v\n%s", err, strings.TrimSpace(string(out)))
+			return false
+		}
+		return true
+	default:
+		// Linux never registered a privileged service (setcap only) — nothing to
+		// elevate for; the caller still deletes the stale binaries.
+		return true
+	}
+}
+
+// legacyMeshServiceRegistered queries the OLD vantaloom-mesh binary's own
+// (unprivileged) `status` verb to check whether its Windows SCM service is
+// still registered, so we only raise a UAC prompt when there's something to
+// remove (mirrors the pre-0.13 CLI's meshServiceRunningOrInstalled).
+func legacyMeshServiceRegistered(meshExe string) bool {
+	cmd := exec.Command(meshExe, "status")
+	winproc.Hide(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(string(out)), "not installed")
+}
+
+// ── shell-quoting helpers (for the elevated legacy-mesh removal commands) ──
+
+// psQuote wraps a value as a PowerShell single-quoted string literal.
+func psQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// shQuote wraps a value as a POSIX single-quoted shell literal.
+func shQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// osaQuote wraps a value as an AppleScript double-quoted string literal (used
+// as the argument to `do shell script`).
+func osaQuote(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`
 }
 
 func (m *Manager) download(ctx context.Context, url, target string, onPct func(int)) error {

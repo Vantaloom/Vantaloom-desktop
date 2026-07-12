@@ -75,7 +75,9 @@ func (a *App) CaptureWebview() (string, error) {
 //	installed, stopped    → auto-update if a newer version is reachable, then start
 //	already running        → return immediately
 //
-// The whole flow is unprivileged (mesh registration is deferred to the CLI).
+// The whole flow is unprivileged except for the one-time legacy mesh-service
+// cleanup (see rt.Manager.uninstallLegacyMeshOnce), which self-gates behind a
+// done-marker and never blocks on a declined elevation prompt.
 func (a *App) Bootstrap() (string, error) {
 	emit := func(phase, msg string, pct int) {
 		wruntime.EventsEmit(a.ctx, bootEvent, rt.Progress{Phase: phase, Message: msg, Percent: pct})
