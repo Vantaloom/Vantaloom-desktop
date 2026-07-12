@@ -147,13 +147,41 @@ func (m *Manager) Installed() bool {
 	return err == nil
 }
 
-// InstalledVersion reads the prefix VERSION file ("" if absent).
+// InstalledVersion returns the installed runtime's product version — always
+// the npm semver when one is known. Since 0.13.5 the VERSION file itself
+// carries the npm semver for every build path; for older installs whose
+// VERSION holds a git hash (pre-unification packages), fall back to the
+// bundled cli/package.json, which has always carried the true npm semver.
+// This is what lets a 0.13.2-era install (VERSION="<git-hash>") still be
+// offered the 0.13.5 update instead of being mistaken for a dev build.
 func (m *Manager) InstalledVersion() string {
-	b, err := os.ReadFile(filepath.Join(m.Prefix, "VERSION"))
+	raw := ""
+	if b, err := os.ReadFile(filepath.Join(m.Prefix, "VERSION")); err == nil {
+		raw = strings.TrimSpace(string(b))
+	}
+	if isSemver(raw) {
+		return raw
+	}
+	if v := m.cliPackageVersion(); isSemver(v) {
+		return v
+	}
+	return raw
+}
+
+// cliPackageVersion reads the npm semver from the bundled cli/package.json
+// ("" if absent/unparseable).
+func (m *Manager) cliPackageVersion() string {
+	b, err := os.ReadFile(filepath.Join(m.Prefix, "cli", "package.json"))
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(b))
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(b, &pkg) != nil {
+		return ""
+	}
+	return strings.TrimSpace(pkg.Version)
 }
 
 // APIPort returns the port the api actually bound (runtime/api.port), falling
@@ -173,8 +201,8 @@ func (m *Manager) BackendURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d/", m.APIPort())
 }
 
-// health probes GET /healthz on the api port and returns its reported version.
-func (m *Manager) health(ctx context.Context) (version string, ok bool) {
+// Health probes GET /healthz on the api port and returns its reported version.
+func (m *Manager) Health(ctx context.Context) (version string, ok bool) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", m.APIPort())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -202,7 +230,7 @@ func (m *Manager) Status(ctx context.Context) Status {
 	s := Status{Prefix: m.Prefix, APIPort: m.APIPort()}
 	s.Installed = m.Installed()
 	s.InstalledVersion = m.InstalledVersion()
-	v, ok := m.health(ctx)
+	v, ok := m.Health(ctx)
 	s.Running = ok
 	s.RunningVersion = v
 	return s
@@ -263,15 +291,78 @@ func (m *Manager) LatestVersion(ctx context.Context) (string, error) {
 	return r.Version, nil
 }
 
-// UpdateAvailable compares the installed version against "latest". Like the
-// CLI, this is an exact mismatch check rather than a semver comparison.
+// UpdateAvailable compares the installed version against "latest". Only
+// semver-shaped versions participate (InstalledVersion already falls back to
+// the bundled cli/package.json semver, so a non-semver here means a genuinely
+// unversioned install). The prompt fires only when latest is strictly NEWER —
+// a locally-built runtime ahead of the registry must not be offered a
+// "downgrade update".
 func (m *Manager) UpdateAvailable(ctx context.Context) (available bool, latest string, err error) {
 	latest, err = m.LatestVersion(ctx)
 	if err != nil {
 		return false, "", err
 	}
 	installed := m.InstalledVersion()
-	return installed != "" && installed != latest, latest, nil
+	if installed == "" {
+		return false, latest, nil
+	}
+	if !isSemver(installed) || !isSemver(latest) {
+		return false, latest, nil
+	}
+	return semverLess(installed, latest), latest, nil
+}
+
+// semverLess reports a < b for X.Y.Z versions (pre-release/build suffixes on
+// the patch part are ignored for ordering; equal cores compare not-less).
+func semverLess(a, b string) bool {
+	pa, pb := semverParts(a), semverParts(b)
+	for i := 0; i < 3; i++ {
+		if pa[i] != pb[i] {
+			return pa[i] < pb[i]
+		}
+	}
+	return false
+}
+
+// semverParts extracts the numeric X.Y.Z triple (missing/invalid parts → 0).
+func semverParts(v string) [3]int {
+	var out [3]int
+	parts := strings.SplitN(v, ".", 3)
+	for i := 0; i < len(parts) && i < 3; i++ {
+		p := parts[i]
+		if i == 2 {
+			if j := strings.IndexAny(p, "-+"); j >= 0 {
+				p = p[:j]
+			}
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out
+		}
+		out[i] = n
+	}
+	return out
+}
+
+// isSemver returns true if v looks like a semantic version (X.Y.Z with optional
+// pre-release suffix). Git commit hashes and other non-semver strings return
+// false. No leading "v" is expected (VERSION file uses bare "0.13.3").
+func isSemver(v string) bool {
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 3 {
+		return false
+	}
+	for _, p := range parts[:2] {
+		if _, err := strconv.Atoi(p); err != nil {
+			return false
+		}
+	}
+	patch := parts[2]
+	if i := strings.IndexAny(patch, "-+"); i >= 0 {
+		patch = patch[:i]
+	}
+	_, err := strconv.Atoi(patch)
+	return err == nil
 }
 
 // Install lays down (or updates to) the requested version of the runtime and
@@ -473,7 +564,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 func (m *Manager) WaitHealthy(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		if _, ok := m.health(ctx); ok {
+		if _, ok := m.Health(ctx); ok {
 			return nil
 		}
 		if time.Now().After(deadline) {
