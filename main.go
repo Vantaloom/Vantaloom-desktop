@@ -92,7 +92,9 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 11, G: 13, B: 20, A: 255},
+		// 原生窗口底色 ≈ jelly 极光夜空底（globals.css --app-background
+		// #050e23）：webview 就绪前的首帧不闪白也不跳色。
+		BackgroundColour: &options.RGBA{R: 5, G: 14, B: 35, A: 255},
 		OnStartup:        app.startup,
 		Bind: []interface{}{
 			app,
