@@ -92,9 +92,9 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		// 原生窗口底色 ≈ jelly 极光夜空底（globals.css --app-background
-		// #050e23）：webview 就绪前的首帧不闪白也不跳色。
-		BackgroundColour: &options.RGBA{R: 5, G: 14, B: 35, A: 255},
+		// 原生窗口底色 = 应用当前主题的画布色（亮 / 暗，见 theme.go）：上次应用
+		// 告诉过壳的那一份，没有就跟随系统——webview 就绪前的首帧不闪错色。
+		BackgroundColour: backgroundFor(savedTheme()),
 		OnStartup:        app.startup,
 		Bind: []interface{}{
 			app,

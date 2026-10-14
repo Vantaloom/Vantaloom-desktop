@@ -4,55 +4,93 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Vantaloom</title>
+    <script>
+      // 主题在首帧之前定：应用在壳里时会把它当前的主题 postMessage 过来，我们记在
+      // 本地存储（与壳的配置目录里那份同一事件写入）；没有记录就跟随系统。
+      (function () {
+        var theme = "";
+        try { theme = localStorage.getItem("vtl:shell-theme") || ""; } catch (_) {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <style>
-      :root {
-        --ink: #0b0d14;
-        --graphite: #161a26;
-        --deep-slate: #1c2030;
-        --ash: #8b93a7;
-        --canvas: #f3f5fb;
-        --teal: #3ad0c8;
-        --violet: #8b7bf0;
-        --pink: #ff5da2;
-        --danger: #ff6b6b;
-        --success: #34d399;
-        --surface: rgba(255, 255, 255, 0.04);
-        --border: rgba(255, 255, 255, 0.08);
+      /* ── 与主应用同一套令牌（取值照抄 packages/ui/src/styles/globals.css 的
+         :root 与 .dark；改主应用的令牌时这里跟着改）── */
+      @font-face {
+        font-family: "VantaLatin";
+        src: url("fonts/vanta-latin.ttf") format("truetype");
+        font-weight: 100 900;
+        font-display: swap;
+        unicode-range: U+0020-007F, U+00A0-024F, U+0370-03FF, U+2070-209F, U+20A0-20CF, U+2100-214F;
       }
+      @font-face { font-family: "VantaCJK"; src: local("DengXian"), local("等线"); font-weight: 100 449; }
+      @font-face { font-family: "VantaCJK"; src: local("DengXian Bold"), local("等线 Bold"); font-weight: 450 900; }
+
+      :root {
+        --app-bg: oklch(0.989 0 0);
+        --bg: oklch(1 0 0);
+        --fg: oklch(0.145 0 0);
+        --muted: oklch(0.97 0 0);
+        --muted-fg: oklch(0.556 0 0);
+        --accent: oklch(0.97 0 0);
+        --border: oklch(0.922 0 0);
+        --primary: oklch(0.205 0 0);
+        --primary-fg: oklch(0.985 0 0);
+        --destructive: oklch(0.577 0.245 27.325);
+        --overlay-bg: rgb(0 0 0 / 35%);
+        --elevation-overlay: 0 18px 50px -16px rgb(0 0 0 / 34%), 0 2px 6px rgb(0 0 0 / 6%);
+        --radius: 0.4375rem;
+        --motion-quick: 150ms;
+        --motion-enter: 250ms;
+        --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+        color-scheme: light;
+      }
+      :root[data-theme="dark"] {
+        --app-bg: oklch(0.145 0 0);
+        --bg: oklch(0.145 0 0);
+        --fg: oklch(0.985 0 0);
+        --muted: oklch(0.269 0 0);
+        --muted-fg: oklch(0.708 0 0);
+        --accent: oklch(0.371 0 0);
+        --border: oklch(1 0 0 / 10%);
+        --primary: oklch(0.922 0 0);
+        --primary-fg: oklch(0.205 0 0);
+        --destructive: oklch(0.704 0.191 22.216);
+        --overlay-bg: rgb(0 0 0 / 55%);
+        --elevation-overlay: 0 20px 60px -16px rgb(0 0 0 / 70%), 0 2px 6px rgb(0 0 0 / 40%);
+        color-scheme: dark;
+      }
+
       * { box-sizing: border-box; margin: 0; }
       html, body { height: 100%; }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-          "Microsoft YaHei", system-ui, sans-serif;
-        color: var(--canvas);
-        background: var(--ink);
+        font-family: "VantaLatin", "VantaCJK", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+        font-size: 13px;
+        color: var(--fg);
+        background: var(--app-bg);
         -webkit-user-select: none;
         user-select: none;
         overflow: hidden;
+        transition: background-color var(--motion-quick) ease;
       }
+      button { font: inherit; }
 
-      /* ── Boot UI（启动/更新阶段可见；进入应用后整体隐藏）── */
-      #bootui {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-      }
+      /* ── Boot UI（启动 / 安装 / 更新阶段；进入应用后整体隐藏）── */
+      #bootui { display: flex; flex-direction: column; height: 100%; }
       #bootui.hidden { display: none; }
 
-      /* ── 应用宿主：webview 永远停在本页（Wails 资产源，runtime 拖拽/调节
+      /* ── 应用宿主：webview 永远停在本页（Wails 资产源，runtime 拖拽 / 调节
          可用），实际 UI 以全屏 iframe 嵌入。窗口边缘留出透明条带不被 iframe
-         覆盖 —— 落在条带上的鼠标事件归本页文档，Wails runtime 的无边框
-         边缘调节原生生效。── */
+         覆盖——落在条带上的鼠标事件归本页文档，Wails runtime 的无边框边缘调节
+         原生生效。── */
       #appwrap { display: none; }
       #appwrap.show { display: block; }
       #appframe {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        border: 0;
-        display: block;
-        background: var(--ink);
+        position: fixed; inset: 0; width: 100%; height: 100%;
+        border: 0; display: block; background: var(--app-bg);
       }
       .rs { position: fixed; z-index: 60; }
       .rs-t  { top: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
@@ -64,381 +102,207 @@
       .rs-tr { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
       .rs-bl { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
 
-      /* ── Title bar (boot 阶段的无边框顶栏) ── */
+      /* ── 顶栏：与应用里的 DesktopTitleBar 同一条（38px、与画布同色无分界线、
+         按钮 36×30 圆角、关闭悬停红）── */
       .titlebar {
-        height: 38px;
-        display: flex;
-        align-items: center;
-        padding: 0 4px;
-        background: var(--ink);
-        border-bottom: 1px solid var(--border);
-        flex-shrink: 0;
+        height: 38px; flex-shrink: 0;
+        display: flex; align-items: center; padding: 0 4px;
+        background: var(--app-bg);
         --wails-draggable: drag;
       }
-      .titlebar-left, .titlebar-right {
-        display: flex;
-        align-items: center;
-        --wails-draggable: no-drag;
-      }
-      .titlebar-center { flex: 1; --wails-draggable: drag; }
+      .titlebar-group { display: flex; align-items: center; --wails-draggable: no-drag; }
+      .titlebar-spacer { flex: 1; height: 100%; --wails-draggable: drag; }
       .tb-btn {
-        width: 36px;
-        height: 30px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: none;
-        border: none;
-        color: var(--ash);
-        cursor: pointer;
-        border-radius: 6px;
-        transition: background 0.12s, color 0.12s;
-        padding: 0;
-        font: inherit;
+        width: 36px; height: 30px; padding: 0;
+        display: flex; align-items: center; justify-content: center;
+        border: 0; border-radius: calc(var(--radius) * 0.8);
+        background: none; color: var(--muted-fg); cursor: pointer;
+        transition: background-color var(--motion-quick) ease, color var(--motion-quick) ease;
         --wails-draggable: no-drag;
       }
-      .tb-btn:hover { background: rgba(255,255,255,0.07); color: var(--canvas); }
+      .tb-btn:hover { background: var(--accent); color: var(--fg); }
       .tb-btn.close:hover { background: #e81123; color: #fff; }
+      .tb-btn:disabled { opacity: 0.3; cursor: default; }
+      .tb-btn:disabled:hover { background: none; color: var(--muted-fg); }
       .tb-btn svg { width: 16px; height: 16px; }
-      .tb-btn.disabled { opacity: 0.3; cursor: default; }
-      .tb-btn.disabled:hover { background: none; color: var(--ash); }
 
-      /* ── Main content area ── */
-      .content {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        position: relative;
-        overflow: hidden;
+      /* ── 中间：俄罗斯方块 + 一行状态 + 细进度条 ── */
+      .stage {
+        flex: 1; min-height: 0;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 14px; padding: 0 24px 38px;
       }
-      .content::before {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background:
-          radial-gradient(ellipse 100% 80% at 50% -5%, rgba(139, 123, 240, 0.18), transparent 55%),
-          radial-gradient(ellipse 80% 60% at 85% 105%, rgba(58, 208, 200, 0.12), transparent 50%);
-        pointer-events: none;
-      }
-
-      .shell {
-        position: relative;
-        width: min(460px, 88vw);
-        text-align: center;
-        padding: 0 20px;
-      }
-
-      .logo {
-        width: 56px;
-        height: 56px;
-        margin: 0 auto 20px;
-        border-radius: 16px;
-        background: linear-gradient(135deg, var(--teal), var(--violet));
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 26px;
-        font-weight: 700;
-        color: var(--ink);
-        box-shadow: 0 8px 32px rgba(139, 123, 240, 0.3);
-      }
-
-      h1 {
-        font-size: 20px;
-        font-weight: 650;
-        letter-spacing: 0.3px;
-        margin: 0 0 4px;
-      }
-      .version-tag {
-        font-size: 11px;
-        font-weight: 500;
-        color: var(--ash);
-        opacity: 0.6;
-        margin-bottom: 18px;
-      }
-
-      .status-card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 16px 18px;
-        text-align: left;
-        margin-bottom: 14px;
-      }
-      .status-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 12px;
-      }
-      .status-icon {
-        width: 28px;
-        height: 28px;
-        border-radius: 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-        font-size: 14px;
-      }
-      .status-icon.loading { background: rgba(139, 123, 240, 0.15); color: var(--violet); }
-      .status-icon.success { background: rgba(52, 211, 153, 0.15); color: var(--success); }
-      .status-icon.error { background: rgba(255, 107, 107, 0.15); color: var(--danger); }
-      .status-text {
-        font-size: 14px;
-        font-weight: 550;
-        color: var(--canvas);
-        line-height: 1.3;
-      }
-      .status-detail { font-size: 12px; color: var(--ash); margin-top: 2px; }
-
-      .progress-area { margin-top: 2px; }
-      .bar-row { display: flex; align-items: center; gap: 10px; }
-      .bar {
-        flex: 1;
-        height: 4px;
-        border-radius: 99px;
-        background: rgba(255, 255, 255, 0.06);
-        overflow: hidden;
-      }
-      .bar > i {
-        display: block;
-        height: 100%;
-        width: 0%;
-        border-radius: 99px;
-        background: linear-gradient(90deg, var(--teal), var(--violet));
-        transition: width 0.4s ease;
-      }
-      .bar.indeterminate > i {
-        width: 35% !important;
-        animation: slide 1.1s ease-in-out infinite;
-      }
-      @keyframes slide {
-        0% { margin-left: -35%; }
-        100% { margin-left: 100%; }
-      }
-      .pct {
+      .status { font-size: 14px; font-weight: 500; color: var(--fg); text-align: center; }
+      .detail {
+        min-height: 18px; margin-top: -8px;
+        font-size: 12px; color: var(--muted-fg); text-align: center;
         font-variant-numeric: tabular-nums;
-        font-size: 11px;
-        font-weight: 550;
-        color: var(--ash);
-        min-width: 32px;
-        text-align: right;
+      }
+      .progress {
+        width: 180px; height: 3px; border-radius: 999px;
+        background: var(--muted); overflow: hidden;
+        opacity: 0; transition: opacity var(--motion-quick) ease;
+      }
+      .progress.show { opacity: 1; }
+      .progress > i {
+        display: block; height: 100%; width: 0;
+        border-radius: inherit; background: var(--primary);
+        transition: width 400ms var(--ease-smooth-out);
       }
 
-      .phases { margin-top: 12px; display: flex; flex-direction: column; }
-      .phase-item {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 5px 0;
-        font-size: 12px;
-        color: var(--ash);
-        opacity: 0.45;
-        transition: opacity 0.2s, color 0.2s;
+      .error {
+        display: none; width: min(420px, 100%);
+        padding: 10px 12px; border-radius: calc(var(--radius) * 1.2);
+        border: 1px solid color-mix(in oklch, var(--destructive) 35%, transparent);
+        background: color-mix(in oklch, var(--destructive) 8%, transparent);
+        color: var(--destructive);
+        font-size: 12px; line-height: 1.6; word-break: break-word;
+        -webkit-user-select: text; user-select: text;
       }
-      .phase-item.active { opacity: 1; color: var(--canvas); }
-      .phase-item.done { opacity: 0.65; color: var(--success); }
-      .phase-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: currentColor;
-        flex-shrink: 0;
-      }
-      .phase-item.active .phase-dot {
-        background: var(--violet);
-        box-shadow: 0 0 6px rgba(139, 123, 240, 0.5);
-      }
-      .phase-item.done .phase-dot { background: var(--success); }
-
-      .error-msg {
-        display: none;
-        font-size: 13px;
-        color: var(--danger);
-        line-height: 1.5;
-        word-break: break-word;
-        margin-top: 8px;
-        padding: 10px 12px;
-        border-radius: 10px;
-        background: rgba(255, 107, 107, 0.08);
-        border: 1px solid rgba(255, 107, 107, 0.15);
-        text-align: left;
-      }
-      .error-msg.show { display: block; }
-
-      .actions {
-        margin-top: 14px;
-        display: none;
-        gap: 8px;
-        justify-content: center;
-      }
+      .error.show { display: block; }
+      .actions { display: none; gap: 8px; }
       .actions.show { display: flex; }
-      button {
-        font: inherit;
-        font-size: 13px;
-        font-weight: 500;
-        padding: 8px 16px;
-        border-radius: 10px;
-        border: 1px solid var(--border);
-        background: var(--surface);
-        color: var(--canvas);
-        cursor: pointer;
-        transition: background 0.15s, border-color 0.15s;
+
+      /* 按钮：与应用的 Button 同一写法（h-8、圆角 7px、13px 中等字重）。 */
+      .btn {
+        height: 32px; padding: 0 12px;
+        display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+        border-radius: var(--radius); border: 1px solid var(--border);
+        background: var(--bg); color: var(--fg);
+        font-size: 13px; font-weight: 500; cursor: pointer;
+        transition: background-color var(--motion-quick) ease, opacity var(--motion-quick) ease;
       }
-      button:hover {
-        background: rgba(255, 255, 255, 0.1);
-        border-color: rgba(255, 255, 255, 0.15);
-      }
-      button.primary {
-        background: linear-gradient(135deg, var(--teal), var(--violet));
-        color: var(--ink);
-        border-color: transparent;
-        font-weight: 600;
-      }
-      button.primary:hover { opacity: 0.9; }
+      .btn:hover { background: var(--accent); }
+      .btn:active { transform: scale(0.98); }
+      .btn.primary { background: var(--primary); color: var(--primary-fg); border-color: transparent; }
+      .btn.primary:hover { opacity: 0.9; background: var(--primary); }
 
       .log-toggle {
-        margin-top: 16px;
-        font-size: 11px;
-        color: var(--ash);
-        opacity: 0.5;
-        cursor: pointer;
+        border: 0; background: none; padding: 2px 6px; border-radius: calc(var(--radius) * 0.8);
+        font-size: 12px; color: var(--muted-fg); cursor: pointer;
+        transition: color var(--motion-quick) ease, background-color var(--motion-quick) ease;
       }
-      .log-toggle:hover { opacity: 0.8; }
+      .log-toggle:hover { color: var(--fg); background: var(--accent); }
       pre.log {
-        display: none;
-        text-align: left;
-        max-height: 140px;
-        overflow: auto;
-        margin: 10px 0 0;
-        padding: 10px 12px;
-        border-radius: 10px;
-        background: rgba(0, 0, 0, 0.3);
-        border: 1px solid var(--border);
-        color: var(--ash);
-        font-size: 10px;
-        line-height: 1.6;
-        white-space: pre-wrap;
+        display: none; width: min(460px, 100%); max-height: 140px; overflow: auto;
+        padding: 8px 10px; border-radius: calc(var(--radius) * 1.2);
+        border: 1px solid var(--border); background: var(--muted);
+        color: var(--muted-fg); font: 11px/1.6 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+        white-space: pre-wrap; -webkit-user-select: text; user-select: text;
       }
       pre.log.show { display: block; }
 
-      .modal-overlay {
-        position: fixed;
-        inset: 0;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        padding: 20px;
-        background: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(6px);
-        z-index: 50;
+      .version {
+        position: fixed; left: 0; right: 0; bottom: 14px;
+        text-align: center; font-size: 11px; color: var(--muted-fg); opacity: 0.7;
+        font-variant-numeric: tabular-nums; pointer-events: none;
       }
-      .modal-overlay.show { display: flex; }
-      .modal {
-        width: min(420px, 90vw);
-        text-align: left;
-        padding: 22px 22px 18px;
-        border-radius: 16px;
-        background: var(--deep-slate);
-        border: 1px solid var(--border);
-        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
-      }
-      .modal h2 { font-size: 16px; font-weight: 650; margin: 0 0 6px; }
-      .modal .version-badge {
-        display: inline-block;
-        font-size: 11px;
-        font-weight: 600;
-        padding: 2px 8px;
-        border-radius: 6px;
-        background: rgba(139, 123, 240, 0.15);
-        color: var(--violet);
-        margin-bottom: 14px;
-      }
-      .modal .modal-body {
-        font-size: 13px;
-        color: var(--ash);
-        line-height: 1.7;
-        margin: 0 0 20px;
-      }
-      .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
-      @keyframes spin { to { transform: rotate(360deg); } }
-      .spinner {
-        width: 14px;
-        height: 14px;
-        border: 2px solid rgba(139, 123, 240, 0.3);
-        border-top-color: var(--violet);
-        border-radius: 50%;
-        animation: spin 0.7s linear infinite;
+      /* ── 俄罗斯方块（主应用 components/tetris-loader 的原生 JS 版）：灰色剪影，
+         格子 10px、间距 2px，8 列 × 7 行。── */
+      .tetris {
+        position: relative; width: 94px; height: 82px;
+        transition: opacity var(--motion-quick) ease-out;
+      }
+      .tetris.fading { opacity: 0; }
+      .tetris > span {
+        position: absolute; width: 10px; height: 10px; border-radius: 2px;
+        background: var(--muted-fg);
+      }
+      .tetris > .settled { opacity: 0.25; }
+      .tetris > .falling { opacity: 0.45; }
+      .tetris > .final { opacity: 0.4; }
+      .tetris > .bob { animation: vtl-tetris-bob 1.4s ease-in-out infinite; }
+      .tetris > .clear { animation: vtl-tetris-clear var(--motion-enter) var(--ease-smooth-out) forwards; }
+      @keyframes vtl-tetris-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+      @keyframes vtl-tetris-clear {
+        0% { opacity: 1; transform: scale(1); }
+        35% { opacity: 1; transform: scale(1.15); background-color: var(--fg); }
+        100% { opacity: 0; transform: scale(0.3); }
+      }
+
+      /* ── 对话框（与应用的 Dialog 同一写法）── */
+      .modal-overlay {
+        position: fixed; inset: 0; z-index: 50;
+        display: none; align-items: center; justify-content: center; padding: 20px;
+        background: var(--overlay-bg); backdrop-filter: blur(1px);
+      }
+      .modal-overlay.show { display: flex; animation: vtl-fade-in var(--motion-enter) var(--ease-smooth-out); }
+      .modal {
+        width: min(420px, 100%);
+        display: grid; gap: 14px; padding: 20px;
+        border-radius: calc(var(--radius) * 1.2); border: 1px solid var(--border);
+        background: var(--bg); box-shadow: var(--elevation-overlay);
+        animation: vtl-zoom-in var(--motion-enter) var(--ease-smooth-out);
+      }
+      .modal h2 { font-size: 14px; font-weight: 600; line-height: 1; }
+      .modal .badge {
+        margin-left: 6px; padding: 1px 6px; border-radius: calc(var(--radius) * 0.6);
+        background: var(--muted); color: var(--muted-fg);
+        font-size: 11px; font-weight: 500; vertical-align: 1px;
+      }
+      .modal p { font-size: 13px; line-height: 1.7; color: var(--muted-fg); }
+      .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+      @keyframes vtl-fade-in { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes vtl-zoom-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
+
+      /* ── 后端未响应覆盖层：盖在应用 iframe 上（宿主页的节点）。加 / 减都在本页
+         同一处（setBackendDown），壳只喊一声「下线了 / 回来了」。── */
+      .down {
+        position: fixed; inset: 0; z-index: 70;
+        display: none; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+        padding: 24px; background: color-mix(in oklch, var(--app-bg) 92%, transparent);
+        backdrop-filter: blur(10px);
+      }
+      .down.show { display: flex; animation: vtl-fade-in var(--motion-enter) var(--ease-smooth-out); }
+      .down .body { max-width: 340px; text-align: center; font-size: 13px; line-height: 1.7; color: var(--muted-fg); margin-top: -6px; }
+      .down .actions { margin-top: 4px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
       }
     </style>
   </head>
   <body>
     <div id="bootui">
-      <!-- Frameless title bar (boot 阶段) -->
       <div class="titlebar">
-        <div class="titlebar-left">
-          <button class="tb-btn disabled" title="菜单">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+        <div class="titlebar-group">
+          <button class="tb-btn" title="菜单" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
           </button>
         </div>
-        <div class="titlebar-center"></div>
-        <div class="titlebar-right">
+        <div class="titlebar-spacer"></div>
+        <div class="titlebar-group">
           <button class="tb-btn" id="tbMin" title="最小化">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="12" x2="18" y2="12"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
           </button>
           <button class="tb-btn" id="tbMax" title="最大化">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
           </button>
           <button class="tb-btn close" id="tbClose" title="关闭">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="7" y1="7" x2="17" y2="17"/><line x1="17" y1="7" x2="7" y2="17"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
           </button>
         </div>
       </div>
 
-      <div class="content">
-        <main class="shell">
-          <div class="logo">V</div>
-          <h1>Vantaloom</h1>
-          <div class="version-tag" id="versionTag"></div>
-
-          <div class="status-card">
-            <div class="status-header">
-              <div class="status-icon loading" id="statusIcon">
-                <div class="spinner"></div>
-              </div>
-              <div>
-                <div class="status-text" id="status">正在启动…</div>
-                <div class="status-detail" id="statusDetail"></div>
-              </div>
-            </div>
-
-            <div class="progress-area" id="progressArea">
-              <div class="bar-row">
-                <div class="bar indeterminate" id="bar"><i id="barFill"></i></div>
-                <div class="pct" id="pct"></div>
-              </div>
-              <div class="phases" id="phases"></div>
-            </div>
-
-            <div class="error-msg" id="error"></div>
-          </div>
-
-          <div class="actions" id="actions">
-            <button class="primary" id="retry">重试</button>
-            <button id="browser">在浏览器中打开</button>
-          </div>
-
-          <div class="log-toggle" id="logToggle">显示详细日志</div>
-          <pre class="log" id="log"></pre>
-        </main>
-      </div>
+      <main class="stage">
+        <div class="tetris" id="bootTetris" role="status" aria-live="polite"></div>
+        <div class="status" id="status">正在启动…</div>
+        <div class="detail" id="statusDetail"></div>
+        <div class="progress" id="progress"><i id="progressFill"></i></div>
+        <div class="error" id="error"></div>
+        <div class="actions" id="actions">
+          <button class="btn primary" id="retry">重试</button>
+          <button class="btn" id="browser">在浏览器中打开</button>
+        </div>
+        <button class="log-toggle" id="logToggle">显示详细日志</button>
+        <pre class="log" id="log"></pre>
+      </main>
+      <div class="version" id="versionTag"></div>
     </div>
 
     <!-- 应用宿主：iframe + 边缘调节条带（本页文档承接边缘鼠标事件，
-         Wails runtime 的无边框拖拽/调节在此源原生可用）。 -->
+         Wails runtime 的无边框拖拽 / 调节在此源原生可用）。 -->
     <div id="appwrap">
       <iframe
         id="appframe"
@@ -455,18 +319,30 @@
       <div class="rs rs-br"></div>
     </div>
 
+    <div class="down" id="down">
+      <div class="tetris" id="downTetris" role="status" aria-live="polite"></div>
+      <div class="status">后端服务未响应</div>
+      <div class="body">正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。</div>
+      <!-- 按钮延后 10s 露出：短暂中断（更新重启）本来就会自愈，一上来就摆三颗
+           按钮反而像出了大事。真卡住的才需要逃生口。 -->
+      <div class="actions" id="downActions">
+        <button class="btn" id="downRestart">重启后端</button>
+        <button class="btn" id="downReload">刷新界面</button>
+        <button class="btn" id="downDismiss">关闭提示</button>
+      </div>
+    </div>
+
     <div class="modal-overlay" id="updateModal">
-      <div class="modal">
-        <h2>发现新版本</h2>
-        <div class="version-badge" id="updateVersion"></div>
-        <p class="modal-body">
-          Vantaloom 后端正在运行中。<br /><br />
-          • 如果有 agent 正在工作 → 选择「跳过」，下次启动时更新。<br />
-          • 如果当前没有任务 → 选择「立即更新」，将停止服务并更新。
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+        <h2 id="updateTitle">发现新版本<span class="badge" id="updateVersion"></span></h2>
+        <p>
+          Vantaloom 后端正在运行。<br />
+          有 agent 正在工作 → 选「跳过」，下次启动时再更新。<br />
+          当前没有任务 → 选「立即更新」，会停止服务、更新并重新启动。
         </p>
         <div class="modal-actions">
-          <button id="updateSkip">跳过</button>
-          <button class="primary" id="updateProceed">立即更新</button>
+          <button class="btn" id="updateSkip">跳过</button>
+          <button class="btn primary" id="updateProceed">立即更新</button>
         </div>
       </div>
     </div>
@@ -475,119 +351,210 @@
       const $ = (id) => document.getElementById(id);
       const statusEl = $("status");
       const statusDetail = $("statusDetail");
-      const statusIcon = $("statusIcon");
       const errorEl = $("error");
-      const bar = $("bar");
-      const barFill = $("barFill");
-      const pct = $("pct");
+      const progress = $("progress");
+      const progressFill = $("progressFill");
       const actions = $("actions");
       const logEl = $("log");
-      const phasesEl = $("phases");
       const updateModal = $("updateModal");
+      const reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
       let targetURL = "";
 
-      // ── Title bar window controls ──
+      // ── 主题：应用在 iframe 里把当前主题告诉我们（vtl:theme）——记住它，下次启动
+      // 首帧就对；同时让壳把原生窗口底色也换掉（拖动缩放时露出来的那一圈）。──
+      function applyTheme(theme) {
+        if (theme !== "light" && theme !== "dark") return;
+        if (document.documentElement.dataset.theme === theme) return;
+        document.documentElement.dataset.theme = theme;
+        try { localStorage.setItem("vtl:shell-theme", theme); } catch (_) {}
+        if (window.go?.main?.App?.SetTheme) window.go.main.App.SetTheme(theme);
+      }
+      // 第一次进来也同步一次原生底色（首帧之前 Go 端按它自己记的那份设过）。
+      function syncNativeTheme() {
+        const theme = document.documentElement.dataset.theme;
+        if (window.go?.main?.App?.SetTheme) window.go.main.App.SetTheme(theme);
+      }
+
+      // ── 俄罗斯方块（主应用 packages/ui/src/components/tetris-loader-script.ts
+      // 的同一份落块脚本）：加载中一块块落下，把左边 7 列底下 4 行堆满，最右一列
+      // 留成竖井、竖条悬在井口；完成时竖条落井、4 行补满消掉，淡出——「消行 =
+      // 加载完成」。──
+      const T_COLS = 8, T_ROWS = 7, T_STACK = 4, T_WELL = T_COLS - 1, T_PITCH = 12;
+      const STACK = [
+        [[0, 0], [1, 0], [2, 0], [2, 1]],
+        [[3, 0], [4, 0], [5, 0], [3, 1]],
+        [[6, 0], [6, 1], [6, 2], [6, 3]],
+        [[0, 1], [1, 1], [1, 2], [2, 2]],
+        [[4, 1], [5, 1], [4, 2], [5, 2]],
+        [[0, 2], [0, 3], [1, 3], [2, 3]],
+        [[3, 2], [3, 3], [4, 3], [5, 3]],
+      ];
+      const FINAL = [[T_WELL, 0], [T_WELL, 1], [T_WELL, 2], [T_WELL, 3]];
+      const dropDistance = (cells) => T_ROWS - 1 - Math.max(...cells.map((c) => c[1]));
+      const cellsAt = (cells, step) => {
+        const lift = Math.max(0, dropDistance(cells) - step);
+        return cells.map(([x, y]) => [x, y + lift]);
+      };
+      const settledCells = (count) => STACK.slice(0, count).flat();
+
+      function createTetris(root) {
+        let phase = { kind: "stacking", piece: 0, step: 0 };
+        let timer = 0;
+        let onFinished = null;
+        function render() {
+          const settled = reducedMotion || phase.kind !== "stacking" ? settledCells(STACK.length) : settledCells(phase.piece);
+          const falling = !reducedMotion && phase.kind === "stacking" ? cellsAt(STACK[phase.piece], phase.step) : [];
+          const finalCells =
+            phase.kind === "dropping" ? cellsAt(FINAL, phase.step)
+            : phase.kind === "clearing" ? FINAL
+            : phase.kind === "fading" || phase.kind === "finished" ? []
+            : cellsAt(FINAL, 0);
+          const clearing = phase.kind === "clearing";
+          const cleared = phase.kind === "fading" || phase.kind === "finished";
+          let html = "";
+          const cell = ([x, y], tone) => {
+            const inCleared = y < T_STACK && (clearing || cleared);
+            if (cleared && inCleared) return;
+            let cls = tone;
+            if (tone === "final" && phase.kind === "waiting") cls += " bob";
+            if (clearing && inCleared) cls += " clear";
+            html += `<span class="${cls}" style="left:${x * T_PITCH}px;bottom:${y * T_PITCH}px"></span>`;
+          };
+          settled.forEach((c) => cell(c, "settled"));
+          falling.forEach((c) => cell(c, "falling"));
+          finalCells.forEach((c) => cell(c, "final"));
+          root.innerHTML = html;
+          root.classList.toggle("fading", phase.kind === "fading" || phase.kind === "finished");
+        }
+        function tick() {
+          let delay = 90;
+          switch (phase.kind) {
+            case "stacking": {
+              const piece = STACK[phase.piece];
+              if (phase.step < dropDistance(piece)) phase = { ...phase, step: phase.step + 1 };
+              else if (phase.piece + 1 < STACK.length) phase = { kind: "stacking", piece: phase.piece + 1, step: 0 };
+              else phase = { kind: "waiting" };
+              break;
+            }
+            case "dropping":
+              delay = 40;
+              phase = phase.step < dropDistance(FINAL) ? { kind: "dropping", step: phase.step + 1 } : { kind: "clearing" };
+              break;
+            case "clearing": phase = { kind: "fading" }; delay = 250; break;
+            case "fading": phase = { kind: "finished" }; delay = 150; break;
+            default: return;
+          }
+          render();
+          schedule(delay);
+        }
+        function schedule(delay) {
+          clearTimeout(timer);
+          if (phase.kind === "waiting") return;
+          if (phase.kind === "finished") { const cb = onFinished; onFinished = null; cb && cb(); return; }
+          timer = setTimeout(tick, delay);
+        }
+        render();
+        if (!reducedMotion) schedule(90);
+        return {
+          /** 完成：竖条落井 + 消行 + 淡出，结束后回调。 */
+          finish(cb) {
+            onFinished = cb;
+            if (reducedMotion) { phase = { kind: "finished" }; render(); schedule(0); return; }
+            if (phase.kind === "stacking" || phase.kind === "waiting") phase = { kind: "dropping", step: 0 };
+            render();
+            schedule(40);
+          },
+          /** 回到第一块重新堆（覆盖层再次出现时）。 */
+          reset() {
+            clearTimeout(timer);
+            onFinished = null;
+            phase = { kind: "stacking", piece: 0, step: 0 };
+            render();
+            if (!reducedMotion) schedule(90);
+          },
+          stop() { clearTimeout(timer); },
+        };
+      }
+
+      const bootTetris = createTetris($("bootTetris"));
+      let downTetris = null;
+
+      // ── 顶栏窗控 ──
       function initTitleBar() {
-        $("tbMin").addEventListener("click", () => {
-          if (window.go?.main?.App?.Minimise) window.go.main.App.Minimise();
-        });
-        $("tbMax").addEventListener("click", () => {
-          if (window.go?.main?.App?.ToggleMaximise) window.go.main.App.ToggleMaximise();
-        });
-        $("tbClose").addEventListener("click", () => {
-          if (window.go?.main?.App?.CloseWindow) window.go.main.App.CloseWindow();
-        });
+        $("tbMin").addEventListener("click", () => window.go?.main?.App?.Minimise?.());
+        $("tbMax").addEventListener("click", () => window.go?.main?.App?.ToggleMaximise?.());
+        $("tbClose").addEventListener("click", () => window.go?.main?.App?.CloseWindow?.());
       }
 
       // ── 应用宿主 ──
       // 进入应用 = 隐藏 boot UI、显示 iframe。webview 顶层永远停在本页：
-      // Wails runtime（拖拽/边缘调节/window.go）持续可用。
+      // Wails runtime（拖拽 / 边缘调节 / window.go）持续可用。
       function enterApp(url) {
+        bootTetris.stop();
         $("bootui").classList.add("hidden");
-        const wrap = $("appwrap");
-        wrap.classList.add("show");
+        $("appwrap").classList.add("show");
         const frame = $("appframe");
-        frame.addEventListener(
-          "load",
-          () => { try { frame.contentWindow.focus(); } catch (_) {} },
-          { once: true }
-        );
+        frame.addEventListener("load", () => { try { frame.contentWindow.focus(); } catch (_) {} }, { once: true });
         frame.src = url;
       }
 
-      // 应用内标题栏把拖拽请求 postMessage 到本页 —— 在 Wails 资产源上
-      // WailsInvoke("drag") 就是官方 runtime 自己的拖拽路径（实测可用）。
+      // 应用（127.0.0.1 上的那一份）发来的消息：标题栏拖拽、主题。
       window.addEventListener("message", (e) => {
         if (!e.origin.startsWith("http://127.0.0.1:")) return;
         const type = e.data && e.data.type;
         if (type === "vtl:drag" && typeof window.WailsInvoke === "function") {
           window.WailsInvoke("drag");
+        } else if (type === "vtl:theme") {
+          applyTheme(e.data.theme);
         }
       });
 
-      // 后端恢复后由壳注入调用：只刷 iframe，不动本页。
-      //
-      // ⚠️ 正因为「只刷 iframe」，它清不掉壳注入在**本页** body 上的断连覆盖层
-      // （#__vt_update_overlay）——那个覆盖层曾经只有「加」没有「减」，一旦弹出
-      // 就永久糊在画面上，用户只能关窗重开。壳侧现在会显式拆它，这里再兜一道：
-      // 任何走到「刷新应用」的路径都必须顺手把它带走。
+      // ── 后端未响应覆盖层：加 / 减成对，都在这里（壳只调 __vtlBackendDown）。──
+      let downActionsTimer = 0;
+      window.__vtlBackendDown = (down) => {
+        const el = $("down");
+        if (down) {
+          if (el.classList.contains("show")) return;
+          $("downActions").classList.remove("show");
+          el.classList.add("show");
+          if (!downTetris) downTetris = createTetris($("downTetris"));
+          else downTetris.reset();
+          clearTimeout(downActionsTimer);
+          downActionsTimer = setTimeout(() => $("downActions").classList.add("show"), 10000);
+        } else {
+          clearTimeout(downActionsTimer);
+          if (downTetris) downTetris.stop();
+          el.classList.remove("show");
+        }
+      };
+      $("downRestart").addEventListener("click", () => window.go?.main?.App?.RestartBackend?.());
+      $("downReload").addEventListener("click", () => window.__vtlReloadApp());
+      $("downDismiss").addEventListener("click", () => window.__vtlBackendDown(false));
+
+      // 后端恢复后由壳调用：只刷 iframe，不动本页——所以覆盖层必须在这里顺手拆掉
+      // （曾经只有「加」没有「减」，一旦弹出就永久糊在画面上）。
       window.__vtlReloadApp = () => {
-        const overlay = document.getElementById("__vt_update_overlay");
-        if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        window.__vtlBackendDown(false);
         const frame = $("appframe");
         if (frame && frame.src) frame.src = frame.src;
         else window.location.reload();
       };
 
-      // ── Phase tracking ──
-      const PHASES = [
-        { key: "check",    label: "检查更新" },
-        { key: "resolve",  label: "查询版本" },
-        { key: "download", label: "下载运行时" },
-        { key: "extract",  label: "解压文件" },
-        { key: "install",  label: "安装文件" },
-        { key: "register", label: "注册服务" },
-        { key: "start",    label: "启动后端" },
-        { key: "wait",     label: "等待就绪" },
-      ];
-      let activePhases = new Set();
-      let donePhases = new Set();
-      let currentPhase = "";
-      let showPhases = false;
+      // ── 阶段文案 ──
+      const PHASE_LABEL = {
+        check: "检查更新", resolve: "查询版本", download: "下载运行时", extract: "解压文件",
+        install: "安装文件", register: "注册服务", update: "更新", start: "启动后端", wait: "等待就绪",
+      };
 
-      function renderPhases() {
-        if (!showPhases || activePhases.size === 0) {
-          phasesEl.innerHTML = "";
-          return;
-        }
-        const visible = PHASES.filter(p => activePhases.has(p.key));
-        phasesEl.innerHTML = visible.map(p => {
-          const cls = donePhases.has(p.key) ? "done" : p.key === currentPhase ? "active" : "";
-          return `<div class="phase-item ${cls}"><div class="phase-dot"></div><span>${p.label}</span></div>`;
-        }).join("");
-      }
-
-      function advancePhase(phase) {
-        if (!phase) return;
-        if (currentPhase && currentPhase !== phase) donePhases.add(currentPhase);
-        currentPhase = phase;
-        activePhases.add(phase);
-        if (["resolve","download","extract","install","register","mesh","start","wait"].includes(phase)) {
-          showPhases = true;
-          ["resolve","download","extract","install","register","start","wait"].forEach(k => activePhases.add(k));
-        }
-        renderPhases();
-      }
-
-      // ── Update modal ──
+      // ── 更新对话框 ──
       function showUpdateModal(latest) {
         $("updateVersion").textContent = latest ? "v" + latest : "";
         updateModal.classList.add("show");
       }
       function answerUpdate(proceed) {
         updateModal.classList.remove("show");
-        if (window.go?.main?.App) window.go.main.App.AnswerUpdatePrompt(proceed);
+        window.go?.main?.App?.AnswerUpdatePrompt?.(proceed);
         setStatus(proceed ? "正在停止服务并更新…" : "正在进入…", "");
       }
 
@@ -596,24 +563,13 @@
         statusEl.textContent = msg || "";
         if (detail !== undefined) statusDetail.textContent = detail || "";
       }
-      function setIconState(state) {
-        statusIcon.className = "status-icon " + state;
-        if (state === "loading") {
-          statusIcon.innerHTML = '<div class="spinner"></div>';
-        } else if (state === "success") {
-          statusIcon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
-        } else {
-          statusIcon.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-        }
-      }
       function setProgress(p) {
-        if (typeof p === "number" && p >= 0) {
-          bar.classList.remove("indeterminate");
-          barFill.style.width = Math.min(100, Math.max(0, p)) + "%";
-          pct.textContent = p > 0 ? p + "%" : "";
+        if (typeof p === "number" && p > 0 && p < 100) {
+          progress.classList.add("show");
+          progressFill.style.width = p + "%";
         } else {
-          bar.classList.add("indeterminate");
-          pct.textContent = "";
+          progress.classList.remove("show");
+          progressFill.style.width = (p >= 100 ? 100 : 0) + "%";
         }
       }
       function appendLog(phase, msg) {
@@ -622,19 +578,17 @@
         logEl.scrollTop = logEl.scrollHeight;
       }
       function showError(msg) {
+        bootTetris.stop();
         errorEl.textContent = msg;
         errorEl.classList.add("show");
         actions.classList.add("show");
-        setStatus("启动失败", "请检查网络连接或重试");
-        setIconState("error");
+        setStatus("启动失败", "请检查网络连接后重试");
         setProgress(0);
-        bar.classList.remove("indeterminate");
         appendLog("error", msg);
       }
       function clearError() {
         errorEl.classList.remove("show");
         actions.classList.remove("show");
-        setIconState("loading");
       }
 
       // ── Wails bridge ──
@@ -649,19 +603,17 @@
         });
       }
 
+      let titleBarReady = false;
       async function boot() {
         clearError();
+        bootTetris.reset();
         setStatus("正在检测 Vantaloom…", "");
         setProgress(-1);
-        showPhases = false;
-        activePhases.clear();
-        donePhases.clear();
-        currentPhase = "";
-        renderPhases();
 
         try {
           await waitForWails();
-          initTitleBar();
+          if (!titleBarReady) { initTitleBar(); titleBarReady = true; }
+          syncNativeTheme();
           try {
             const st = await window.go.main.App.GetStatus();
             if (st?.installedVersion) $("versionTag").textContent = "v" + st.installedVersion;
@@ -675,44 +627,34 @@
         try {
           targetURL = await window.go.main.App.Bootstrap();
           setStatus("就绪", "正在进入应用…");
-          setIconState("success");
           setProgress(100);
-          activePhases.forEach(k => donePhases.add(k));
-          renderPhases();
-          await new Promise(r => setTimeout(r, 400));
-          enterApp(targetURL);
+          bootTetris.finish(() => enterApp(targetURL));
         } catch (e) {
-          showError((e?.message) ? e.message : String(e));
+          showError(e?.message ? e.message : String(e));
         }
       }
 
       let subscribed = false;
       function subscribe() {
-        if (subscribed) return;
-        if (!window.runtime?.EventsOn) return;
+        if (subscribed || !window.runtime?.EventsOn) return;
         subscribed = true;
         window.runtime.EventsOn("vantaloom:boot", (p) => {
           if (!p) return;
-          if (p.phase) advancePhase(p.phase);
+          const label = PHASE_LABEL[p.phase] || "";
           if (p.message) {
-            let detail = "";
-            if (p.phase === "download") {
-              const m = p.message.match(/(\d+)%/);
-              if (m) detail = "下载进度 " + m[1] + "%";
-            }
-            setStatus(p.message, detail);
+            const pct = typeof p.percent === "number" && p.percent > 0 && p.percent < 100 && p.phase === "download"
+              ? " · " + p.percent + "%" : "";
+            setStatus(p.message, label ? label + pct : "");
           }
-          if (typeof p.percent === "number") setProgress(p.percent);
+          if (typeof p.percent === "number") setProgress(p.phase === "download" ? p.percent : -1);
           appendLog(p.phase, p.message || "");
         });
-        window.runtime.EventsOn("vantaloom:update-prompt", (p) => {
-          showUpdateModal(p?.latest);
-        });
+        window.runtime.EventsOn("vantaloom:update-prompt", (p) => showUpdateModal(p?.latest));
       }
 
       $("retry").addEventListener("click", boot);
       $("browser").addEventListener("click", () => {
-        // 只剥壳标记参数（vtlshell/vtlport/vtltoken）—— 普通浏览器不该渲染
+        // 只剥壳标记参数（vtlshell/vtlport/vtltoken）——普通浏览器不该渲染
         // 应用内标题栏；route 自带的查询串（如 /ide/?machine=…）必须保留。
         if (!targetURL || !window.go?.main) return;
         let u = targetURL;
