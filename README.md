@@ -51,6 +51,18 @@ GOPROXY="https://goproxy.cn,direct" go install github.com/wailsapp/wails/v2/cmd/
 - 注入到宿主页的全屏覆盖层，「加」和「减」必须成对写：恢复路径 `__vtlReloadApp`
   只刷 iframe，够不着宿主页的节点，只加不减就是「弹出即永久」。
 
+- **托盘（`internal/tray`）不能做成「挂了就重来」的东西。** 运行时曾经有一个由
+  supervisor 常驻的独立托盘进程，某些 Windows 11 上一启动就崩，被立刻拉起、再崩、
+  再拉——每轮留下一个死图标，最后内存耗尽（主仓 b4aa9617）。现在托盘住在壳进程里：
+  一个进程只能 `Start` 成功一次、跨进程用命名互斥量只留一个、图标只 `NIM_ADD` 一次
+  （之后只 `NIM_MODIFY`，资源管理器重启时把同一个加回去）、失败就本次不要托盘。
+  `syscall.NewCallback` 也只建一次——它占的回调槽进程内有上限，反复建会 panic。
+  改这里之前跑一遍 `VTL_TRAY_LIVE=1 go test ./internal/tray -run Live -v`。
+- 有托盘时（Windows）关窗 = 收进托盘，真正退出走托盘菜单；主窗口带单实例锁，
+  再双击 exe 只会把已有窗口叫回来。副窗口（`--route`）不建托盘、不受单实例锁。
+- 用户从托盘停掉服务后，健康监视器**不去救**它（否则 8 秒后又被自己拉起来），
+  覆盖层改说「服务已停止」。ctl 的 `/tray-state` 能读到托盘此刻的提示与菜单。
+
 ## 历史
 
 本目录原先住在私有主仓的 `apps/desktop/`，并镜像到公开仓 `Vantaloom-app` 的

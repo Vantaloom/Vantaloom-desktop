@@ -1,2 +1,5 @@
 # Wails build output (binaries, installers, generated platform assets)
 /build/bin/
+# wails build 生成的平台资源与 JS 绑定（CI 每次重新生成）
+/build/windows/
+/frontend/wailsjs/

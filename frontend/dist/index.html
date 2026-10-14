@@ -321,12 +321,13 @@
 
     <div class="down" id="down">
       <div class="tetris" id="downTetris" role="status" aria-live="polite"></div>
-      <div class="status">后端服务未响应</div>
-      <div class="body">正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。</div>
+      <div class="status" id="downTitle">后端服务未响应</div>
+      <div class="body" id="downBody">正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。</div>
       <!-- 按钮延后 10s 露出：短暂中断（更新重启）本来就会自愈，一上来就摆三颗
            按钮反而像出了大事。真卡住的才需要逃生口。 -->
       <div class="actions" id="downActions">
         <button class="btn" id="downRestart">重启后端</button>
+        <button class="btn primary" id="downStart">启动服务</button>
         <button class="btn" id="downReload">刷新界面</button>
         <button class="btn" id="downDismiss">关闭提示</button>
       </div>
@@ -511,24 +512,46 @@
       });
 
       // ── 后端未响应覆盖层：加 / 减成对，都在这里（壳只调 __vtlBackendDown）。──
+      // reason = "stopped"：服务是用户从托盘停掉的——不是故障，不说「正在重启」，
+      // 也不放方块动画（没有在等什么），直接给「启动服务」。
       let downActionsTimer = 0;
-      window.__vtlBackendDown = (down) => {
+      let downReason = "";
+      window.__vtlBackendDown = (down, reason) => {
         const el = $("down");
         if (down) {
-          if (el.classList.contains("show")) return;
-          $("downActions").classList.remove("show");
+          const stopped = reason === "stopped";
+          if (el.classList.contains("show") && downReason === (stopped ? "stopped" : "")) return;
+          downReason = stopped ? "stopped" : "";
+          $("downTitle").textContent = stopped ? "服务已停止" : "后端服务未响应";
+          $("downBody").innerHTML = stopped
+            ? "后台服务已从托盘停止。需要时点下面的「启动服务」，或在托盘菜单里启动。"
+            : "正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。";
+          $("downRestart").style.display = stopped ? "none" : "";
+          $("downStart").style.display = stopped ? "" : "none";
+          $("downTetris").style.display = stopped ? "none" : "";
           el.classList.add("show");
+          clearTimeout(downActionsTimer);
+          if (stopped) {
+            if (downTetris) downTetris.stop();
+            $("downActions").classList.add("show");
+            return;
+          }
+          $("downActions").classList.remove("show");
           if (!downTetris) downTetris = createTetris($("downTetris"));
           else downTetris.reset();
-          clearTimeout(downActionsTimer);
           downActionsTimer = setTimeout(() => $("downActions").classList.add("show"), 10000);
         } else {
+          downReason = "";
           clearTimeout(downActionsTimer);
           if (downTetris) downTetris.stop();
           el.classList.remove("show");
         }
       };
       $("downRestart").addEventListener("click", () => window.go?.main?.App?.RestartBackend?.());
+      $("downStart").addEventListener("click", () => {
+        window.go?.main?.App?.RestartBackend?.();
+        window.__vtlBackendDown(true); // 换回「等它回来」那一版，恢复后自动刷新
+      });
       $("downReload").addEventListener("click", () => window.__vtlReloadApp());
       $("downDismiss").addEventListener("click", () => window.__vtlBackendDown(false));
 

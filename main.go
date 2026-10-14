@@ -82,20 +82,33 @@ func main() {
 
 	app := NewApp(route)
 
+	// 主窗口单实例（#117）：再次双击 exe = 把已有窗口叫到前台，而不是再开一个主窗口、
+	// 再来一个托盘。副窗口（--route）是同一个 exe 的多进程，不能被它拦。
+	var single *options.SingleInstanceLock
+	if route == "" {
+		single = &options.SingleInstanceLock{
+			UniqueId:               "com.vantaloom.desktop.main",
+			OnSecondInstanceLaunch: func(options.SecondInstanceData) { app.showWindow() },
+		}
+	}
+
 	err = wails.Run(&options.App{
-		Title:            title,
-		Width:            width,
-		Height:           height,
-		MinWidth:         480,
-		MinHeight:        600,
-		Frameless:        true,
+		Title:     title,
+		Width:     width,
+		Height:    height,
+		MinWidth:  480,
+		MinHeight: 600,
+		Frameless: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		// 原生窗口底色 = 应用当前主题的画布色（亮 / 暗，见 theme.go）：上次应用
 		// 告诉过壳的那一份，没有就跟随系统——webview 就绪前的首帧不闪错色。
-		BackgroundColour: backgroundFor(savedTheme()),
-		OnStartup:        app.startup,
+		BackgroundColour:   backgroundFor(savedTheme()),
+		OnStartup:          app.startup,
+		OnShutdown:         app.shutdown,
+		OnBeforeClose:      app.beforeClose,
+		SingleInstanceLock: single,
 		Bind: []interface{}{
 			app,
 		},

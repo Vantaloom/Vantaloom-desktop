@@ -52,6 +52,10 @@ type App struct {
 	// route 非空 = 副窗口模式（--route，已通过 validateSubWindowRoute 校验）：
 	// Bootstrap 跳过安装/更新编排，只等待运行时可达后加载该站内路由。
 	route string
+
+	// tray 是主窗口进程的托盘（tray_app.go）；nil = 副窗口、不支持的平台或初始化
+	// 失败——一律当作没有托盘处理。
+	tray *trayState
 }
 
 // NewApp builds the App with a runtime Manager bound to the default install
@@ -66,6 +70,12 @@ func NewApp(route string) *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.startCtl()
+	a.startTray()
+}
+
+// shutdown 接 Wails OnShutdown：删掉托盘图标再退出——不留死图标。
+func (a *App) shutdown(ctx context.Context) {
+	a.stopTray()
 }
 
 // ── Window-control HTTP endpoint ─────────────────────────────────────────────
@@ -112,7 +122,7 @@ func (a *App) startCtl() {
 	}
 	action("/minimise", func() { wruntime.WindowMinimise(a.ctx) })
 	action("/toggle-maximise", func() { wruntime.WindowToggleMaximise(a.ctx) })
-	action("/close", func() { wruntime.Quit(a.ctx) })
+	action("/close", func() { a.closeWindow() })
 	// /drag and /resize hand the pointer interaction to the OS via
 	// WM_NCLBUTTONDOWN (see winctl_windows.go) — native move/size loops with
 	// Aero Snap. Windows-only; macOS drags via the webview "drag" message.
@@ -199,6 +209,18 @@ func (a *App) startCtl() {
 		_, _ = w.Write([]byte(b64))
 	})
 
+	// /tray-state：托盘此刻的悬停提示与菜单（只读，同一枚 token）。给诊断与 e2e 用——
+	// 托盘是系统画的，外面读不回它显示了什么。
+	mux.HandleFunc("/tray-state", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.URL.Query().Get("t") != token {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(a.trayStateSnapshot())
+	})
+
 	a.ctlPort = ln.Addr().(*net.TCPAddr).Port
 	a.ctlToken = token
 	go func() { _ = http.Serve(ln, mux) }()
@@ -274,6 +296,9 @@ func (a *App) Bootstrap() (string, error) {
 	emit := func(phase, msg string, pct int) {
 		wruntime.EventsEmit(a.ctx, bootEvent, rt.Progress{Phase: phase, Message: msg, Percent: pct})
 	}
+	// 托盘状态行在启动期间显示「正在启动…」，结束（成功或失败）后回到真实状态。
+	a.setBooting(true)
+	defer a.setBooting(false)
 
 	ctx, cancel := context.WithTimeout(a.ctx, 12*time.Minute)
 	defer cancel()
@@ -465,6 +490,8 @@ const autoReviveAfter = 8 * time.Second
 func (a *App) monitorBackend() {
 	downSince := time.Time{}
 	overlayShown := false
+	// overlayStopped：当前覆盖层是「服务已停止（用户从托盘停的）」那一版。
+	overlayStopped := false
 	revived := false
 
 	for {
@@ -480,10 +507,19 @@ func (a *App) monitorBackend() {
 				downSince = time.Now()
 			}
 			down := time.Since(downSince)
+			// 用户从托盘故意停掉的：立刻换成「服务已停止」那一版，并且**不去救**——
+			// 否则停了 8 秒又被自己拉起来（#117）。
+			if a.userStoppedService() {
+				if !overlayShown || !overlayStopped {
+					overlayShown, overlayStopped = true, true
+					wruntime.WindowExecJS(a.ctx, showStoppedOverlayJS)
+				}
+				continue
+			}
 			// Show an overlay after the backend has been down for 4+ seconds
 			// (ignore brief healthcheck blips during normal operation).
-			if !overlayShown && down > 4*time.Second {
-				overlayShown = true
+			if (!overlayShown || overlayStopped) && down > 4*time.Second {
+				overlayShown, overlayStopped = true, false
 				wruntime.WindowExecJS(a.ctx, showDownOverlayJS)
 			}
 			// Try to bring it back exactly once per outage. `vantaloomctl start`
@@ -502,7 +538,7 @@ func (a *App) monitorBackend() {
 
 		// Backend is up.
 		if overlayShown {
-			overlayShown = false
+			overlayShown, overlayStopped = false, false
 			// Tear the overlay down FIRST: the reload below only refreshes the
 			// app iframe, which cannot remove a node owned by the host page.
 			wruntime.WindowExecJS(a.ctx, removeDownOverlayJS)
@@ -529,6 +565,10 @@ func (a *App) monitorBackend() {
 // injected into the HOST page, which is served from the Wails asset origin, so
 // the window.go bindings are available to it.
 func (a *App) RestartBackend() {
+	// 覆盖层上点「启动服务 / 重启后端」= 用户要它回来：撤掉「故意停的」标记。
+	if a.tray != nil {
+		a.tray.stoppedByUser.Store(false)
+	}
 	go func() {
 		if err := a.mgr.Start(a.ctx); err != nil {
 			fmt.Printf("[desktop] manual restart backend: %v\n", err)
@@ -549,8 +589,9 @@ func (a *App) DismissOverlay() {
 // 拆它的脚本另写一份，两边各改各的，于是出现过「只有加没有减」的永久覆盖层。
 // 宿主页就是本壳内嵌的那一页，函数恒在；?. 只是防御。
 const (
-	showDownOverlayJS   = `window.__vtlBackendDown && window.__vtlBackendDown(true)`
-	removeDownOverlayJS = `window.__vtlBackendDown && window.__vtlBackendDown(false)`
+	showDownOverlayJS    = `window.__vtlBackendDown && window.__vtlBackendDown(true)`
+	showStoppedOverlayJS = `window.__vtlBackendDown && window.__vtlBackendDown(true, "stopped")`
+	removeDownOverlayJS  = `window.__vtlBackendDown && window.__vtlBackendDown(false)`
 )
 
 // askUpdatePrompt asks the splash to render the in-page update modal and blocks
@@ -588,8 +629,9 @@ func (a *App) Minimise() { wruntime.WindowMinimise(a.ctx) }
 // ToggleMaximise toggles maximise/restore. Bound as window.go.main.App.ToggleMaximise().
 func (a *App) ToggleMaximise() { wruntime.WindowToggleMaximise(a.ctx) }
 
-// CloseWindow closes the app. Bound as window.go.main.App.CloseWindow().
-func (a *App) CloseWindow() { wruntime.Quit(a.ctx) }
+// CloseWindow 是启动页顶栏的关闭（window.go.main.App.CloseWindow）：有托盘时收进
+// 托盘，否则退出（见 tray_app.go 的 closeWindow）。
+func (a *App) CloseWindow() { a.closeWindow() }
 
 // AnswerUpdatePrompt is invoked from the splash modal with the user's choice:
 // true = 结束并更新 (stop + update + restart now), false = 忽略本次更新 (skip).
