@@ -36,6 +36,8 @@ const (
 	trayRestart
 	trayLogs
 	trayQuit
+	trayRollback
+	trayUnpin
 )
 
 // serviceState 是托盘看到的服务状态（只由 trayLoop 与动作改）。
@@ -147,7 +149,7 @@ func (a *App) trayMenu() []tray.Item {
 	booting := ts.booting.Load()
 	busy := st.busy != "" || booting
 	installed := a.mgr.Installed()
-	return []tray.Item{
+	items := []tray.Item{
 		{Label: statusLine(st, booting, ts.stoppedByUser.Load())},
 		{Separator: true},
 		{ID: trayOpen, Label: "打开 Vantaloom", Default: true},
@@ -158,9 +160,16 @@ func (a *App) trayMenu() []tray.Item {
 		{ID: trayRestart, Label: "重启服务", Disabled: busy || !installed},
 		{Separator: true},
 		{ID: trayLogs, Label: "打开日志文件夹"},
-		{Separator: true},
-		{ID: trayQuit, Label: "退出 Vantaloom（服务继续在后台运行）"},
+		{ID: trayRollback, Label: "回退运行时版本…", Disabled: busy},
 	}
+	// 回退过、版本被固定着：给一个回到「有新版就更新」的出口（#119）。
+	if pin := a.pinnedVersion(); pin != "" {
+		items = append(items, tray.Item{ID: trayUnpin, Label: fmt.Sprintf("恢复自动更新（当前固定在 %s）", pin)})
+	}
+	return append(items,
+		tray.Item{Separator: true},
+		tray.Item{ID: trayQuit, Label: "退出 Vantaloom（服务继续在后台运行）"},
+	)
 }
 
 func (a *App) onTraySelect(id int) {
@@ -194,6 +203,11 @@ func (a *App) onTraySelect(id int) {
 		})
 	case trayLogs:
 		openFolder(filepath.Join(a.mgr.Prefix, "logs"))
+	case trayRollback:
+		a.openRollbackDialog()
+	case trayUnpin:
+		a.setPinnedVersion("")
+		a.tray.t.Notify("已恢复自动更新", "下次启动时若有新版本，会照常更新或提示。")
 	case trayQuit:
 		a.quitShell()
 	}

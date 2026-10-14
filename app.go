@@ -56,6 +56,9 @@ type App struct {
 	// tray 是主窗口进程的托盘（tray_app.go）；nil = 副窗口、不支持的平台或初始化
 	// 失败——一律当作没有托盘处理。
 	tray *trayState
+
+	// recovery：崩溃判据的日志偏移、回退安装进行中、启动时的崩溃（recovery.go）。
+	recovery recoveryState
 }
 
 // NewApp builds the App with a runtime Manager bound to the default install
@@ -299,6 +302,11 @@ func (a *App) Bootstrap() (string, error) {
 	// 托盘状态行在启动期间显示「正在启动…」，结束（成功或失败）后回到真实状态。
 	a.setBooting(true)
 	defer a.setBooting(false)
+	// 崩溃判据只看这次启动之后新增的日志（#119）。
+	a.recovery.errLogOffset.Store(a.mgr.APIErrLogSize())
+	a.recovery.bootCrash.Store(nil)
+	// 用户回退过并固定了版本：不自动更新、不弹更新（否则下次打开就又升回去了）。
+	pinned := a.pinnedVersion()
 
 	ctx, cancel := context.WithTimeout(a.ctx, 12*time.Minute)
 	defer cancel()
@@ -314,6 +322,14 @@ func (a *App) Bootstrap() (string, error) {
 	cancelNode()
 
 	st := a.mgr.Status(ctx)
+
+	if st.Running && pinned != "" {
+		emit("ready", fmt.Sprintf("后端已在运行（固定在 %s，不自动更新）", pinned), 100)
+		a.lastVersion = st.RunningVersion
+		url := a.appURL()
+		a.startMonitor()
+		return url, nil
+	}
 
 	if st.Running {
 		// Backend already up. We never silently hot-update a running backend (an
@@ -369,10 +385,20 @@ func (a *App) Bootstrap() (string, error) {
 	} else {
 		switch {
 		case !st.Installed:
+			target := "latest"
+			if pinned != "" {
+				target = pinned
+			}
 			emit("install", "首次运行：正在安装 Vantaloom 核心服务…", 0)
-			if _, err := a.mgr.Install(ctx, "latest", func(p rt.Progress) {
+			if _, err := a.mgr.Install(ctx, target, func(p rt.Progress) {
 				wruntime.EventsEmit(a.ctx, bootEvent, p)
 			}); err != nil {
+				return "", err
+			}
+
+		case pinned != "":
+			emit("start", fmt.Sprintf("正在启动后端服务（固定在 %s）…", pinned), 88)
+			if err := a.mgr.Start(ctx); err != nil {
 				return "", err
 			}
 
@@ -407,6 +433,12 @@ func (a *App) Bootstrap() (string, error) {
 
 	emit("wait", "正在等待后端就绪…", 95)
 	if err := a.mgr.WaitHealthy(ctx, 90*time.Second); err != nil {
+		// 等不到健康：看看是不是一启动就崩了（#119）——是的话启动页如实说，并给
+		// 「打开日志文件夹 / 回退到旧版本」。
+		if crash := a.mgr.CrashSince(a.recovery.errLogOffset.Load()); crash != nil {
+			a.recovery.bootCrash.Store(crash)
+			return "", fmt.Errorf("客户端后端崩溃了：%s（%s）", crash.Reason, crash.At)
+		}
 		return "", err
 	}
 
@@ -470,95 +502,7 @@ func (a *App) startMonitor() {
 // window, which is exactly what users reported.
 const autoReviveAfter = 8 * time.Second
 
-// monitorBackend polls the backend health endpoint. When the backend restarts
-// with a different version (e.g. after a CLI-driven update), it force-reloads
-// the webview so the user gets the new frontend without restarting the shell.
-// When the backend goes down it shows a recovery overlay, tries to revive the
-// backend, and tears the overlay back down once it answers again.
-//
-// 三条不变量（都是修 bug 修出来的，别退回去）：
-//
-//  1. **覆盖层必须显式拆掉。** 它挂在宿主页上，而恢复动作走 __vtlReloadApp——那
-//     只刷 iframe，不动宿主页。于是「加」有代码、「减」没有，一旦弹出就永久糊在
-//     那儿，关窗重开是唯一出路。removeDownOverlayJS 是那个减号（宿主页的
-//     __vtlReloadApp 也会顺手拆）。
-//  2. **文案不许替后端编故事。** 壳看不见真正的更新：前端的「检查更新」spawn 的
-//     是一个脱离进程的 updater，壳只看得到「后端没了」。所以以前对**任何**健康
-//     中断都写「正在更新 Vantaloom」，而绝大多数中断其实是后端崩了——用户盯着一
-//     个根本不存在的更新进度条。现在只陈述可观测的事实。
-//  3. **必须有人真的去救。** 后端无人监管，光显示进度条不会让它回来。
-func (a *App) monitorBackend() {
-	downSince := time.Time{}
-	overlayShown := false
-	// overlayStopped：当前覆盖层是「服务已停止（用户从托盘停的）」那一版。
-	overlayStopped := false
-	revived := false
-
-	for {
-		select {
-		case <-a.ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-		}
-
-		v, ok := a.mgr.Health(a.ctx)
-		if !ok {
-			if downSince.IsZero() {
-				downSince = time.Now()
-			}
-			down := time.Since(downSince)
-			// 用户从托盘故意停掉的：立刻换成「服务已停止」那一版，并且**不去救**——
-			// 否则停了 8 秒又被自己拉起来（#117）。
-			if a.userStoppedService() {
-				if !overlayShown || !overlayStopped {
-					overlayShown, overlayStopped = true, true
-					wruntime.WindowExecJS(a.ctx, showStoppedOverlayJS)
-				}
-				continue
-			}
-			// Show an overlay after the backend has been down for 4+ seconds
-			// (ignore brief healthcheck blips during normal operation).
-			if (!overlayShown || overlayStopped) && down > 4*time.Second {
-				overlayShown, overlayStopped = true, false
-				wruntime.WindowExecJS(a.ctx, showDownOverlayJS)
-			}
-			// Try to bring it back exactly once per outage. `vantaloomctl start`
-			// is idempotent: if the process is actually alive and merely wedged,
-			// it won't double-start it.
-			if !revived && down > autoReviveAfter {
-				revived = true
-				go func() {
-					if err := a.mgr.Start(a.ctx); err != nil {
-						fmt.Printf("[desktop] auto-revive backend: %v\n", err)
-					}
-				}()
-			}
-			continue
-		}
-
-		// Backend is up.
-		if overlayShown {
-			overlayShown, overlayStopped = false, false
-			// Tear the overlay down FIRST: the reload below only refreshes the
-			// app iframe, which cannot remove a node owned by the host page.
-			wruntime.WindowExecJS(a.ctx, removeDownOverlayJS)
-			// Backend came back — force reload to pick up new frontend.
-			wruntime.WindowExecJS(a.ctx, "window.__vtlReloadApp ? window.__vtlReloadApp() : window.location.reload()")
-			a.lastVersion = v
-			downSince = time.Time{}
-			revived = false
-			continue
-		}
-
-		if a.lastVersion != "" && v != "" && v != a.lastVersion {
-			// Version changed without downtime (hot restart). Reload.
-			a.lastVersion = v
-			wruntime.WindowExecJS(a.ctx, "window.__vtlReloadApp ? window.__vtlReloadApp() : window.location.reload()")
-		}
-		downSince = time.Time{}
-		revived = false
-	}
-}
+// monitorBackend 住在 recovery.go（#119：中断分四种，各说各的真话）。
 
 // RestartBackend restarts the local runtime. Bound to the recovery overlay's
 // 「重启后端」 button as window.go.main.App.RestartBackend() — the overlay is
@@ -569,6 +513,9 @@ func (a *App) RestartBackend() {
 	if a.tray != nil {
 		a.tray.stoppedByUser.Store(false)
 	}
+	// 崩溃覆盖层上点的重启：那次崩溃已经被看见了，之后只认新的崩溃——否则下一次
+	// 探测又读到同一份旧崩溃，覆盖层在重启途中跳回「崩溃了」（#119）。
+	a.recovery.errLogOffset.Store(a.mgr.APIErrLogSize())
 	go func() {
 		if err := a.mgr.Start(a.ctx); err != nil {
 			fmt.Printf("[desktop] manual restart backend: %v\n", err)
@@ -588,11 +535,8 @@ func (a *App) DismissOverlay() {
 // __vtlBackendDown），加和减是同一个函数的两个参数——以前这里注入一整段 HTML，
 // 拆它的脚本另写一份，两边各改各的，于是出现过「只有加没有减」的永久覆盖层。
 // 宿主页就是本壳内嵌的那一页，函数恒在；?. 只是防御。
-const (
-	showDownOverlayJS    = `window.__vtlBackendDown && window.__vtlBackendDown(true)`
-	showStoppedOverlayJS = `window.__vtlBackendDown && window.__vtlBackendDown(true, "stopped")`
-	removeDownOverlayJS  = `window.__vtlBackendDown && window.__vtlBackendDown(false)`
-)
+// 显示那一侧由 recovery.go 的 downOverlayJS(kind, detail) 生成。
+const removeDownOverlayJS = `window.__vtlBackendDown && window.__vtlBackendDown(false)`
 
 // askUpdatePrompt asks the splash to render the in-page update modal and blocks
 // until the user answers via AnswerUpdatePrompt — true = stop+update+restart,

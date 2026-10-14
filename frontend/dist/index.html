@@ -256,7 +256,60 @@
       }
       .down.show { display: flex; animation: vtl-fade-in var(--motion-enter) var(--ease-smooth-out); }
       .down .body { max-width: 340px; text-align: center; font-size: 13px; line-height: 1.7; color: var(--muted-fg); margin-top: -6px; }
-      .down .actions { margin-top: 4px; }
+      .down .actions { margin-top: 4px; flex-wrap: wrap; justify-content: center; }
+      .down .crash-icon { display: none; width: 34px; height: 34px; color: var(--destructive); }
+      .down.crash .crash-icon { display: block; }
+      .down .reason {
+        display: none; max-width: 460px; padding: 8px 10px; border-radius: calc(var(--radius) * 1.2);
+        border: 1px solid color-mix(in oklch, var(--destructive) 35%, transparent);
+        background: color-mix(in oklch, var(--destructive) 8%, transparent);
+        color: var(--destructive); font: 12px/1.6 ui-monospace, Consolas, "Microsoft YaHei", monospace;
+        word-break: break-word; white-space: pre-line; text-align: left; -webkit-user-select: text; user-select: text;
+      }
+      .down.crash .reason { display: block; }
+      .link-btn {
+        border: 0; background: none; padding: 0; color: var(--fg); cursor: pointer;
+        text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in oklch, var(--fg) 35%, transparent);
+        font: inherit;
+      }
+      .link-btn:hover { text-decoration-color: var(--fg); }
+
+      /* 回退对话框：盖在覆盖层（z 70）之上。 */
+      #rollbackModal { z-index: 80; }
+      #rollbackModal .modal { width: min(460px, 100%); }
+      .rb-list {
+        max-height: min(340px, 50vh); overflow: auto; margin: 0 -6px;
+        scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+        display: flex; flex-direction: column; gap: 1px;
+      }
+      .rb-row {
+        display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 0 8px;
+        border-radius: calc(var(--radius) * 0.8); cursor: pointer;
+        transition: background-color var(--motion-quick) ease;
+      }
+      .rb-row:hover { background: var(--accent); }
+      .rb-row.selected { background: var(--muted); }
+      .rb-row.disabled { cursor: default; opacity: 0.55; }
+      .rb-row.disabled:hover { background: none; }
+      .rb-row input { accent-color: var(--primary); margin: 0; }
+      .rb-ver { font-weight: 500; font-variant-numeric: tabular-nums; }
+      .rb-tag {
+        padding: 0 6px; border-radius: calc(var(--radius) * 0.6); background: var(--muted);
+        color: var(--muted-fg); font-size: 11px; line-height: 18px;
+      }
+      .rb-date { margin-left: auto; color: var(--muted-fg); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .rb-more { align-self: flex-start; margin: 4px 8px; }
+      .rb-note { font-size: 12px; line-height: 1.6; color: var(--muted-fg); }
+      .rb-busy { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 10px 0 4px; }
+      .rb-busy.show { display: flex; }
+      .rb-error {
+        display: none; padding: 8px 10px; border-radius: calc(var(--radius) * 1.2);
+        border: 1px solid color-mix(in oklch, var(--destructive) 35%, transparent);
+        background: color-mix(in oklch, var(--destructive) 8%, transparent);
+        color: var(--destructive); font-size: 12px; line-height: 1.6; word-break: break-word;
+        -webkit-user-select: text; user-select: text;
+      }
+      .rb-error.show { display: block; }
 
       @media (prefers-reduced-motion: reduce) {
         *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
@@ -293,6 +346,8 @@
         <div class="error" id="error"></div>
         <div class="actions" id="actions">
           <button class="btn primary" id="retry">重试</button>
+          <button class="btn" id="bootLogs">打开日志文件夹</button>
+          <button class="btn" id="bootRollback">回退到旧版本…</button>
           <button class="btn" id="browser">在浏览器中打开</button>
         </div>
         <button class="log-toggle" id="logToggle">显示详细日志</button>
@@ -321,15 +376,42 @@
 
     <div class="down" id="down">
       <div class="tetris" id="downTetris" role="status" aria-live="polite"></div>
+      <svg class="crash-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
       <div class="status" id="downTitle">后端服务未响应</div>
-      <div class="body" id="downBody">正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。</div>
+      <div class="body" id="downBody">正在自动重连并尝试重启后端，恢复后本页会自动刷新。</div>
+      <div class="reason" id="downReason"></div>
       <!-- 按钮延后 10s 露出：短暂中断（更新重启）本来就会自愈，一上来就摆三颗
            按钮反而像出了大事。真卡住的才需要逃生口。 -->
       <div class="actions" id="downActions">
         <button class="btn" id="downRestart">重启后端</button>
         <button class="btn primary" id="downStart">启动服务</button>
+        <button class="btn" id="downRollback">回退到旧版本…</button>
+        <button class="btn" id="downLogs">打开日志文件夹</button>
         <button class="btn" id="downReload">刷新界面</button>
         <button class="btn" id="downDismiss">关闭提示</button>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="rollbackModal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rollbackTitle">
+        <h2 id="rollbackTitle">回退运行时版本<span class="badge" id="rbCurrent"></span></h2>
+        <p class="rb-note" id="rbNote">
+          选一个版本装上：会停止服务、替换程序文件再启动。回退后壳<b>不会再自动升级</b>（运行时的「空闲时自动安装」也会一并关掉），
+          直到你点「恢复自动更新」。较旧的版本可能读不懂新版本写下的数据，建议只回退一两个版本。
+        </p>
+        <div class="rb-busy" id="rbBusy">
+          <div class="tetris" id="rbTetris"></div>
+          <div class="status" id="rbStatus">正在从 npm 拉取版本列表…</div>
+          <div class="detail" id="rbDetail"></div>
+        </div>
+        <div class="rb-list" id="rbList" role="radiogroup" aria-label="运行时版本"></div>
+        <div class="rb-error" id="rbError"></div>
+        <div class="modal-actions">
+          <button class="link-btn rb-note" id="rbUnpin" style="margin-right:auto;display:none">恢复自动更新</button>
+          <button class="btn" id="rbLogs" style="display:none">打开日志文件夹</button>
+          <button class="btn" id="rbCancel">取消</button>
+          <button class="btn primary" id="rbInstall" disabled>安装所选版本</button>
+        </div>
       </div>
     </div>
 
@@ -511,49 +593,226 @@
         }
       });
 
-      // ── 后端未响应覆盖层：加 / 减成对，都在这里（壳只调 __vtlBackendDown）。──
-      // reason = "stopped"：服务是用户从托盘停掉的——不是故障，不说「正在重启」，
-      // 也不放方块动画（没有在等什么），直接给「启动服务」。
+      // ── 后端没了的覆盖层：加 / 减成对，都在这里（壳只调 __vtlBackendDown）。──
+      // 四种，各说各的真话（#119，判据在壳的 recovery.go）：
+      //   stopped    用户从托盘停的——不是故障，直接给「启动服务」；
+      //   installing 运行时自己正在装更新——这时说「正在安装」才是真话；
+      //   crash      日志里有这次中断新增的 panic / fatal——如实说崩了、给原因、打开
+      //              日志、重启 / 回退，**不自动拉起**；
+      //   ""         不知道为什么没了——自动重连一次，10s 后露出逃生按钮。
       let downActionsTimer = 0;
-      let downReason = "";
-      window.__vtlBackendDown = (down, reason) => {
+      let downKey = "";
+      window.__vtlBackendDown = (down, reason, detail) => {
         const el = $("down");
-        if (down) {
-          const stopped = reason === "stopped";
-          if (el.classList.contains("show") && downReason === (stopped ? "stopped" : "")) return;
-          downReason = stopped ? "stopped" : "";
-          $("downTitle").textContent = stopped ? "服务已停止" : "后端服务未响应";
-          $("downBody").innerHTML = stopped
-            ? "后台服务已从托盘停止。需要时点下面的「启动服务」，或在托盘菜单里启动。"
-            : "正在自动重连并尝试重启后端，恢复后本页会自动刷新。<br />如果你刚触发了更新，这是正常的。";
-          $("downRestart").style.display = stopped ? "none" : "";
-          $("downStart").style.display = stopped ? "" : "none";
-          $("downTetris").style.display = stopped ? "none" : "";
-          el.classList.add("show");
-          clearTimeout(downActionsTimer);
-          if (stopped) {
-            if (downTetris) downTetris.stop();
-            $("downActions").classList.add("show");
-            return;
-          }
-          $("downActions").classList.remove("show");
-          if (!downTetris) downTetris = createTetris($("downTetris"));
-          else downTetris.reset();
-          downActionsTimer = setTimeout(() => $("downActions").classList.add("show"), 10000);
-        } else {
-          downReason = "";
+        if (!down) {
+          downKey = "";
           clearTimeout(downActionsTimer);
           if (downTetris) downTetris.stop();
-          el.classList.remove("show");
+          el.classList.remove("show", "crash");
+          return;
+        }
+        const kind = reason || "";
+        const d = detail || {};
+        const key = kind + JSON.stringify(d);
+        if (el.classList.contains("show") && downKey === key) return;
+        downKey = key;
+        const show = (id, on) => { $(id).style.display = on ? "" : "none"; };
+        let animate = false;
+        let actionsAfter = 0;
+        switch (kind) {
+          case "stopped":
+            $("downTitle").textContent = "服务已停止";
+            $("downBody").textContent = "后台服务已从托盘停止。需要时点下面的「启动服务」，或在托盘菜单里启动。";
+            ["downStart", "downLogs", "downDismiss"].forEach((id) => show(id, true));
+            ["downRestart", "downRollback", "downReload"].forEach((id) => show(id, false));
+            break;
+          case "installing":
+            $("downTitle").textContent = d.version ? "正在安装更新 " + d.version : "正在安装更新";
+            $("downBody").textContent = "运行时正在替换程序文件并重启，装完本页会自动刷新。";
+            ["downLogs", "downDismiss"].forEach((id) => show(id, true));
+            ["downStart", "downRestart", "downRollback", "downReload"].forEach((id) => show(id, false));
+            animate = true;
+            actionsAfter = 60000; // 装得久才需要看日志
+            break;
+          case "crash":
+            $("downTitle").textContent = "客户端后端崩溃了";
+            $("downBody").innerHTML = "";
+            $("downBody").append("运行时进程崩溃退出了，没有自动重启（多半会再崩）。");
+            {
+              const link = document.createElement("button");
+              link.className = "link-btn";
+              link.textContent = "点击打开日志文件夹";
+              link.addEventListener("click", () => window.go?.main?.App?.OpenLogsFolder?.());
+              $("downBody").append(document.createElement("br"), link);
+            }
+            $("downReason").textContent = (d.reason || "崩溃") + (d.at ? "\n" + d.at : "");
+            ["downRestart", "downRollback", "downLogs"].forEach((id) => show(id, true));
+            ["downStart", "downReload", "downDismiss"].forEach((id) => show(id, false));
+            break;
+          default:
+            $("downTitle").textContent = "后端服务未响应";
+            $("downBody").textContent = "正在自动重连并尝试重启后端，恢复后本页会自动刷新。";
+            ["downRestart", "downLogs", "downReload", "downDismiss"].forEach((id) => show(id, true));
+            ["downStart", "downRollback"].forEach((id) => show(id, false));
+            animate = true;
+            actionsAfter = 10000; // 短暂中断本来就会自愈，一上来就摆按钮像出了大事
+        }
+        el.classList.toggle("crash", kind === "crash");
+        $("downTetris").style.display = animate ? "" : "none";
+        if (animate) {
+          if (!downTetris) downTetris = createTetris($("downTetris"));
+          else downTetris.reset();
+        } else if (downTetris) {
+          downTetris.stop();
+        }
+        el.classList.add("show");
+        clearTimeout(downActionsTimer);
+        $("downActions").classList.toggle("show", actionsAfter === 0);
+        if (actionsAfter > 0) {
+          downActionsTimer = setTimeout(() => $("downActions").classList.add("show"), actionsAfter);
         }
       };
-      $("downRestart").addEventListener("click", () => window.go?.main?.App?.RestartBackend?.());
-      $("downStart").addEventListener("click", () => {
+      $("downRestart").addEventListener("click", () => {
         window.go?.main?.App?.RestartBackend?.();
         window.__vtlBackendDown(true); // 换回「等它回来」那一版，恢复后自动刷新
       });
+      $("downStart").addEventListener("click", () => {
+        window.go?.main?.App?.RestartBackend?.();
+        window.__vtlBackendDown(true);
+      });
+      $("downRollback").addEventListener("click", () => openRollback());
+      $("downLogs").addEventListener("click", () => window.go?.main?.App?.OpenLogsFolder?.());
       $("downReload").addEventListener("click", () => window.__vtlReloadApp());
       $("downDismiss").addEventListener("click", () => window.__vtlBackendDown(false));
+
+      // ── 回退运行时版本（#119）──
+      // 拉 npm 上的版本列表 → 选一个 → 壳用首次安装同一条路装上 → 刷新应用；装上的
+      // 版本被固定，壳不再自动升级，直到点「恢复自动更新」。
+      const rollbackModal = $("rollbackModal");
+      let rbTetris = null;
+      let rbVersions = [];
+      let rbSelected = "";
+      let rbShowAll = false;
+      let rbInstalling = false;
+      const RB_INITIAL = 30;
+      function rbBusy(on, status, detail) {
+        $("rbBusy").classList.toggle("show", on);
+        $("rbList").style.display = on ? "none" : "";
+        if (on) {
+          $("rbStatus").textContent = status || "";
+          $("rbDetail").textContent = detail || "";
+          if (!rbTetris) rbTetris = createTetris($("rbTetris"));
+          else rbTetris.reset();
+        } else if (rbTetris) {
+          rbTetris.stop();
+        }
+      }
+      function rbError(msg) {
+        $("rbError").textContent = msg || "";
+        $("rbError").classList.toggle("show", Boolean(msg));
+        $("rbLogs").style.display = msg ? "" : "none";
+      }
+      function fmtDate(iso) {
+        if (!iso) return "";
+        const t = new Date(iso);
+        if (Number.isNaN(t.getTime())) return "";
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
+      }
+      function renderRollbackList() {
+        const list = $("rbList");
+        list.innerHTML = "";
+        const shown = rbShowAll ? rbVersions : rbVersions.slice(0, RB_INITIAL);
+        for (const v of shown) {
+          const row = document.createElement("label");
+          row.className = "rb-row" + (v.current ? " disabled" : "") + (v.version === rbSelected ? " selected" : "");
+          const radio = document.createElement("input");
+          radio.type = "radio";
+          radio.name = "rbVersion";
+          radio.value = v.version;
+          radio.disabled = v.current;
+          radio.checked = v.version === rbSelected;
+          radio.addEventListener("change", () => { rbSelected = v.version; renderRollbackList(); });
+          const ver = document.createElement("span");
+          ver.className = "rb-ver";
+          ver.textContent = v.version;
+          row.append(radio, ver);
+          if (v.current) { const tag = document.createElement("span"); tag.className = "rb-tag"; tag.textContent = "当前"; row.append(tag); }
+          if (v.latest) { const tag = document.createElement("span"); tag.className = "rb-tag"; tag.textContent = "最新"; row.append(tag); }
+          const date = document.createElement("span");
+          date.className = "rb-date";
+          date.textContent = fmtDate(v.publishedAt);
+          row.append(date);
+          list.append(row);
+        }
+        if (!rbShowAll && rbVersions.length > RB_INITIAL) {
+          const more = document.createElement("button");
+          more.className = "link-btn rb-note rb-more";
+          more.textContent = `显示更早的 ${rbVersions.length - RB_INITIAL} 个版本`;
+          more.addEventListener("click", () => { rbShowAll = true; renderRollbackList(); });
+          list.append(more);
+        }
+        $("rbInstall").disabled = !rbSelected || rbInstalling;
+      }
+      async function openRollback() {
+        if (rollbackModal.classList.contains("show")) return;
+        rbSelected = "";
+        rbShowAll = false;
+        rbError("");
+        $("rbInstall").disabled = true;
+        $("rbCancel").disabled = false;
+        rollbackModal.classList.add("show");
+        try {
+          const info = await window.go?.main?.App?.GetRecoveryInfo?.();
+          $("rbCurrent").textContent = info?.installedVersion ? "当前 " + info.installedVersion : "";
+          $("rbUnpin").style.display = info?.pinnedVersion ? "" : "none";
+          $("rbUnpin").textContent = info?.pinnedVersion ? `恢复自动更新（现在固定在 ${info.pinnedVersion}）` : "";
+        } catch (_) {}
+        rbBusy(true, "正在从 npm 拉取版本列表…", "");
+        try {
+          rbVersions = (await window.go.main.App.ListRuntimeVersions()) || [];
+          rbBusy(false);
+          // 默认选中当前版本的上一个（最常见的诉求：退回前一版）。
+          const idx = rbVersions.findIndex((v) => v.current);
+          const prev = idx >= 0 ? rbVersions[idx + 1] : null;
+          rbSelected = prev ? prev.version : "";
+          renderRollbackList();
+        } catch (e) {
+          rbBusy(false);
+          rbError("拉取版本列表失败：" + (e?.message || String(e)));
+        }
+      }
+      function closeRollback() {
+        if (rbInstalling) return;
+        rollbackModal.classList.remove("show");
+        rbBusy(false);
+      }
+      async function installSelected() {
+        if (!rbSelected || rbInstalling) return;
+        rbInstalling = true;
+        rbError("");
+        $("rbInstall").disabled = true;
+        $("rbCancel").disabled = true;
+        rbBusy(true, `正在切换到 ${rbSelected}…`, "");
+        try {
+          await window.go.main.App.InstallRuntimeVersion(rbSelected);
+          rbInstalling = false;
+          rbTetris?.finish(() => closeRollback());
+        } catch (e) {
+          rbInstalling = false;
+          rbBusy(false);
+          renderRollbackList();
+          $("rbCancel").disabled = false;
+          rbError(e?.message || String(e));
+        }
+      }
+      $("rbCancel").addEventListener("click", closeRollback);
+      $("rbInstall").addEventListener("click", installSelected);
+      $("rbLogs").addEventListener("click", () => window.go?.main?.App?.OpenLogsFolder?.());
+      $("rbUnpin").addEventListener("click", () => {
+        window.go?.main?.App?.UnpinRuntimeVersion?.();
+        $("rbUnpin").style.display = "none";
+      });
 
       // 后端恢复后由壳调用：只刷 iframe，不动本页——所以覆盖层必须在这里顺手拆掉
       // （曾经只有「加」没有「减」，一旦弹出就永久糊在画面上）。
@@ -608,6 +867,10 @@
         setStatus("启动失败", "请检查网络连接后重试");
         setProgress(0);
         appendLog("error", msg);
+        // 一启动就崩了（日志里有这次新增的 panic / fatal）：说清楚，不让人去查网络。
+        window.go?.main?.App?.GetRecoveryInfo?.().then((info) => {
+          if (info?.bootCrash) setStatus("客户端后端崩溃了", "可以打开日志文件夹看看，或回退到旧版本");
+        }).catch(() => {});
       }
       function clearError() {
         errorEl.classList.remove("show");
@@ -673,9 +936,21 @@
           appendLog(p.phase, p.message || "");
         });
         window.runtime.EventsOn("vantaloom:update-prompt", (p) => showUpdateModal(p?.latest));
+        window.runtime.EventsOn("vantaloom:rollback", (p) => {
+          if (!p || !rbInstalling) return;
+          const pct = typeof p.percent === "number" && p.percent > 0 && p.percent < 100 ? p.percent + "%" : "";
+          $("rbStatus").textContent = p.message || "";
+          $("rbDetail").textContent = [PHASE_LABEL[p.phase] || "", pct].filter(Boolean).join(" · ");
+        });
+        window.runtime.EventsOn("vantaloom:open-rollback", () => openRollback());
       }
 
       $("retry").addEventListener("click", boot);
+      $("bootLogs").addEventListener("click", () => window.go?.main?.App?.OpenLogsFolder?.());
+      $("bootRollback").addEventListener("click", () => {
+        subscribe();
+        openRollback();
+      });
       $("browser").addEventListener("click", () => {
         // 只剥壳标记参数（vtlshell/vtlport/vtltoken）——普通浏览器不该渲染
         // 应用内标题栏；route 自带的查询串（如 /ide/?machine=…）必须保留。

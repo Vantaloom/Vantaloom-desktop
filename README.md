@@ -62,6 +62,24 @@ GOPROXY="https://goproxy.cn,direct" go install github.com/wailsapp/wails/v2/cmd/
   再双击 exe 只会把已有窗口叫回来。副窗口（`--route`）不建托盘、不受单实例锁。
 - 用户从托盘停掉服务后，健康监视器**不去救**它（否则 8 秒后又被自己拉起来），
   覆盖层改说「服务已停止」。ctl 的 `/tray-state` 能读到托盘此刻的提示与菜单。
+- **后端没了，覆盖层只说壳真知道的事**（`recovery.go`，Vantaloom/Vantaloom#119）。
+  以前任何中断都显示「正在更新」，而绝大多数其实是崩溃。现在分四种：托盘停的 /
+  `config/self-update.json` 刚写了 `installing`（真在装）/ `logs/api.err.log`
+  **在这次中断里新增**了 `panic:` / `fatal error:`（崩溃：给原因、打开日志、重启、
+  回退，**不自动拉起**）/ 都不是（未响应，自动重连一次）。崩溃判据只读「后端最后
+  一次健康时的日志大小」之后的字节——live 日志里本来就躺着 0.16.18 那次 stack
+  overflow，从头读会把每次普通重启都判成崩溃。
+- **回退运行时版本**：版本列表来自 npm 完整 packument（要发布时间，约 0.5MB），
+  下限 `0.13.5`（更早的 VERSION 是 git hash、带旧 mesh 服务、没有 iframe 宿主下的
+  标题栏；会堆托盘图标的旧托盘 6 月 6 日就删了，也在下限之前）。0.13.5 起的
+  `vantaloomctl` 都认 `install --prefix --version` / `start|stop --prefix`，
+  `/healthz` 都带 `ok`+`version`（已逐一核对）。装上旧版后**固定**在
+  `<prefix>/config/desktop-pin`：启动时不自动更新、不弹更新，并尽力关掉运行时自己的
+  「空闲时自动安装」——否则下次开壳 / 空闲一分钟就又升回那个崩溃的版本。
+- WebView2 的远程调试端口开不出来（Wails 自己传了浏览器参数，
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 被覆盖）。e2e 要看真实窗口画面用
+  `PrintWindow(PW_RENDERFULLCONTENT)`，截图进程要先 `SetProcessDPIAware`，否则在
+  150% 缩放下只截到左上角三分之二。
 
 ## 历史
 
