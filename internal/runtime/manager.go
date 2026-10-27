@@ -67,7 +67,9 @@ type Progress struct {
 type Manager struct {
 	Prefix   string
 	Registry string
-	HTTP     *http.Client
+	// MirrorRegistry 是镜像线的下载源（source.go）；"" = npmmirror，"off" = 不走镜像。
+	MirrorRegistry string
+	HTTP           *http.Client
 }
 
 // New builds a Manager. Empty prefix/registry fall back to the same defaults
@@ -239,13 +241,21 @@ func (m *Manager) Status(ctx context.Context) Status {
 type resolved struct {
 	Version string
 	Tarball string
+	// 校验值（下载后核对，source.go 的 verifyArchive）。
+	Integrity string
+	Shasum    string
+	// Name / Registry：这一份是哪个包、从哪儿来的（日志与报错用）。
+	Name     string
+	Registry string
+	// Mirror：下载地址在镜像上（镜像线，见 source.go）。
+	Mirror bool
 }
 
-// resolve fetches the npm packument (abbreviated metadata) and selects a
+// resolveFrom fetches the npm packument (abbreviated metadata) and selects a
 // version, resolving a dist-tag like "latest" to a concrete version + tarball.
-func (m *Manager) resolve(ctx context.Context, name, version string) (resolved, error) {
+func (m *Manager) resolveFrom(ctx context.Context, registry, name, version string) (resolved, error) {
 	// npm requires the "/" in the scope to be percent-encoded.
-	metaURL := m.Registry + "/" + strings.Replace(name, "/", "%2f", 1)
+	metaURL := strings.TrimRight(registry, "/") + "/" + strings.Replace(name, "/", "%2f", 1)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metaURL, nil)
 	if err != nil {
 		return resolved{}, err
@@ -254,7 +264,7 @@ func (m *Manager) resolve(ctx context.Context, name, version string) (resolved, 
 	req.Header.Set("User-Agent", "vantaloom-desktop")
 	resp, err := m.HTTP.Do(req)
 	if err != nil {
-		return resolved{}, fmt.Errorf("cannot reach registry %s: %w", m.Registry, err)
+		return resolved{}, fmt.Errorf("cannot reach registry %s: %w", registry, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -264,7 +274,9 @@ func (m *Manager) resolve(ctx context.Context, name, version string) (resolved, 
 		DistTags map[string]string `json:"dist-tags"`
 		Versions map[string]struct {
 			Dist struct {
-				Tarball string `json:"tarball"`
+				Tarball   string `json:"tarball"`
+				Integrity string `json:"integrity"`
+				Shasum    string `json:"shasum"`
 			} `json:"dist"`
 		} `json:"versions"`
 	}
@@ -279,12 +291,16 @@ func (m *Manager) resolve(ctx context.Context, name, version string) (resolved, 
 	if !ok || pv.Dist.Tarball == "" {
 		return resolved{}, fmt.Errorf("missing %s@%s in registry", name, version)
 	}
-	return resolved{Version: selected, Tarball: pv.Dist.Tarball}, nil
+	return resolved{
+		Version: selected, Tarball: pv.Dist.Tarball,
+		Integrity: pv.Dist.Integrity, Shasum: pv.Dist.Shasum,
+		Name: name, Registry: strings.TrimRight(registry, "/"),
+	}, nil
 }
 
 // LatestVersion returns the registry's "latest" version for this platform.
 func (m *Manager) LatestVersion(ctx context.Context) (string, error) {
-	r, err := m.resolve(ctx, RuntimePackageName(), "latest")
+	r, err := m.resolveRelease(ctx, "latest")
 	if err != nil {
 		return "", err
 	}
@@ -378,7 +394,7 @@ func (m *Manager) Install(ctx context.Context, version string, progress func(Pro
 	}
 
 	report("resolve", "正在查询运行时版本…", 2)
-	res, err := m.resolve(ctx, RuntimePackageName(), version)
+	res, err := m.resolveRelease(ctx, version)
 	if err != nil {
 		return "", fmt.Errorf("解析运行时包失败: %w", err)
 	}
@@ -391,7 +407,8 @@ func (m *Manager) Install(ctx context.Context, version string, progress func(Pro
 
 	report("download", fmt.Sprintf("正在下载运行时 %s…", res.Version), 8)
 	archive := filepath.Join(tmp, "runtime.tgz")
-	if err := m.download(ctx, res.Tarball, archive, func(p int) {
+	// 两条线：镜像线先下（国内快），按 npmjs.org 的校验值核对，不行就退回主线（source.go）。
+	if _, err := m.downloadRelease(ctx, res, archive, func(p int) {
 		report("download", fmt.Sprintf("正在下载运行时 %s… %d%%", res.Version, p), 8+p*44/100)
 	}); err != nil {
 		return "", fmt.Errorf("下载运行时失败: %w", err)
